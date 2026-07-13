@@ -295,7 +295,7 @@ onMounted(() => {
     agentStore.addMessage({
       role: "assistant",
       content:
-        '你好！我是**胸片X光AI辅助诊断助手**。\n\n我可以帮你：\n- 📷 上传胸片进行病灶检测（10种常见胸部病变）\n- 💬 用自然语言描述需求，如"帮我分析这张胸片"\n- 📁 批量检测多张胸片或 ZIP 压缩包\n\n支持检测：肺不张、钙化、实变、积液、肺气肿、纤维化、骨折、肿块、结节、气胸\n\n请上传一张胸片开始吧！',
+        "你好！我是**胸片X光AI辅助诊断助手** 🫁\n\n我可以帮你：\n- 📷 上传胸片进行 AI 病灶检测\n- 📁 批量检测多张胸片或 ZIP 包\n- 💬 自然语言分析解读检测结果\n\n支持 10 种胸部病变：肺不张、钙化、实变、积液、肺气肿、纤维化、骨折、肿块、结节、气胸\n\n---\n*请上传胸片或输入消息开始*",
     });
   }
 });
@@ -324,21 +324,25 @@ onMounted(() => {
   justify-content: flex-start;
 }
 .message-bubble {
-  max-width: 75%;
-  padding: 12px 16px;
-  border-radius: 12px;
-  line-height: 1.6;
+  max-width: 78%;
+  padding: 14px 18px;
+  border-radius: $border-radius-md;
+  line-height: 1.65;
   word-break: break-word;
+  font-size: 14px;
+  animation: msgIn 0.3s ease;
 }
 .user-bubble {
-  background: #409eff;
+  background: linear-gradient(135deg, $primary-color, $primary-light);
   color: #fff;
-  border-bottom-right-radius: 4px;
+  border-bottom-right-radius: $spacing-xs;
+  box-shadow: 0 2px 8px rgba($primary-color, 0.25);
 }
 .assistant-bubble {
-  background: #fff;
-  border: 1px solid #e0e0e0;
-  border-bottom-left-radius: 4px;
+  background: $bg-white;
+  border: 1px solid #e8ecf0;
+  border-bottom-left-radius: $spacing-xs;
+  box-shadow: $shadow-sm;
 }
 .message-content {
   white-space: pre-wrap;
@@ -372,15 +376,15 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   padding: 12px 20px;
-  border-top: 1px solid #e0e0e0;
-  background: #fff;
+  border-top: 1px solid #eceff4;
+  background: $bg-white;
 }
 .input-area {
   display: flex;
   gap: 8px;
   padding: 12px 20px;
-  border-top: 1px solid #e0e0e0;
-  background: #fff;
+  border-top: 1px solid #eceff4;
+  background: $bg-white;
   .el-input {
     flex: 1;
   }
@@ -391,7 +395,7 @@ onMounted(() => {
   background: #f5f5f5;
   border-radius: 4px;
   font-size: 12px;
-  color: #666;
+  color: $text-secondary;
 }
 @keyframes typing {
   0%,
@@ -403,6 +407,16 @@ onMounted(() => {
   30% {
     opacity: 1;
     transform: translateY(-4px);
+  }
+}
+@keyframes msgIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 </style>

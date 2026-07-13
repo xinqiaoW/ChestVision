@@ -65,31 +65,31 @@ function handleCommand(command) {
 <style lang="scss" scoped>
 .app-header {
   height: $header-height;
-  background: #fff;
-  border-bottom: 1px solid #ebeef5;
+  background: $bg-white;
+  border-bottom: 1px solid #eceff4;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 $spacing-lg;
-  box-shadow: $shadow-sm;
-  z-index: 100;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: $spacing-sm;
+  gap: 10px;
 }
 
 .header-logo {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
 }
 
 .header-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
   color: $text-primary;
+  letter-spacing: -0.3px;
 }
 
 .header-right {
@@ -100,19 +100,20 @@ function handleCommand(command) {
 .user-info {
   display: flex;
   align-items: center;
-  gap: $spacing-sm;
+  gap: 8px;
   cursor: pointer;
   padding: 4px 8px;
   border-radius: $border-radius-sm;
-  transition: background 0.2s;
+  transition: background 0.2s ease;
 
   &:hover {
     background: #f5f7fa;
   }
-}
 
-.username {
-  font-size: 14px;
-  color: $text-primary;
+  .username {
+    font-size: 14px;
+    color: $text-regular;
+    font-weight: 500;
+  }
 }
 </style>

@@ -1,72 +1,74 @@
 <template>
   <div class="register-page">
-    <div class="register-card">
-      <div class="register-header">
-        <img src="/favicon.svg" alt="logo" class="register-logo" />
-        <h2>创建账号</h2>
-        <p>注册后即可使用胸片X光智能分析系统</p>
+    <div class="register-brand">
+      <div class="brand-content">
+        <div class="brand-icon">🫁</div>
+        <h1>ChestVision</h1>
+        <p class="brand-subtitle">加入我们，开启智能诊断之旅</p>
       </div>
-
-      <el-form
-        ref="formRef"
-        :model="registerForm"
-        :rules="registerRules"
-        label-width="0"
-        size="large"
-        @submit.prevent="handleRegister"
-      >
-        <el-form-item prop="username">
-          <el-input
-            v-model="registerForm.username"
-            placeholder="请输入用户名"
-            prefix-icon="User"
-          />
-        </el-form-item>
-
-        <el-form-item prop="email">
-          <el-input
-            v-model="registerForm.email"
-            placeholder="请输入邮箱"
-            prefix-icon="Message"
-          />
-        </el-form-item>
-
-        <el-form-item prop="password">
-          <el-input
-            v-model="registerForm.password"
-            type="password"
-            placeholder="请输入密码（至少 6 位）"
-            prefix-icon="Lock"
-            show-password
-          />
-        </el-form-item>
-
-        <el-form-item prop="confirmPassword">
-          <el-input
-            v-model="registerForm.confirmPassword"
-            type="password"
-            placeholder="请确认密码"
-            prefix-icon="Lock"
-            show-password
-            @keyup.enter="handleRegister"
-          />
-        </el-form-item>
-
-        <el-form-item>
-          <el-button
-            type="primary"
-            class="register-btn"
-            :loading="loading"
-            @click="handleRegister"
-          >
-            注 册
-          </el-button>
-        </el-form-item>
-      </el-form>
-
-      <div class="register-footer">
-        <span>已有账号？</span>
-        <router-link to="/login">立即登录</router-link>
+    </div>
+    <div class="register-form-area">
+      <div class="register-card">
+        <div class="register-header">
+          <h2>创建账号</h2>
+          <p>注册后即可使用胸片X光智能分析系统</p>
+        </div>
+        <el-form
+          ref="formRef"
+          :model="registerForm"
+          :rules="registerRules"
+          label-width="0"
+          size="large"
+          @submit.prevent="handleRegister"
+        >
+          <el-form-item prop="username">
+            <el-input
+              v-model="registerForm.username"
+              placeholder="用户名"
+              prefix-icon="User"
+            />
+          </el-form-item>
+          <el-form-item prop="email">
+            <el-input
+              v-model="registerForm.email"
+              placeholder="邮箱"
+              prefix-icon="Message"
+            />
+          </el-form-item>
+          <el-form-item prop="password">
+            <el-input
+              v-model="registerForm.password"
+              type="password"
+              placeholder="密码（至少6位）"
+              prefix-icon="Lock"
+              show-password
+            />
+          </el-form-item>
+          <el-form-item prop="confirmPassword">
+            <el-input
+              v-model="registerForm.confirmPassword"
+              type="password"
+              placeholder="确认密码"
+              prefix-icon="Lock"
+              show-password
+              @keyup.enter="handleRegister"
+            />
+          </el-form-item>
+          <el-form-item>
+            <el-button
+              type="primary"
+              class="register-btn"
+              :loading="loading"
+              @click="handleRegister"
+              round
+              >注 册</el-button
+            >
+          </el-form-item>
+        </el-form>
+        <div class="register-footer">
+          <span>已有账号？</span>
+          <router-link to="/login">立即登录</router-link>
+        </div>
       </div>
     </div>
   </div>
@@ -144,60 +146,86 @@ async function handleRegister() {
 
 <style lang="scss" scoped>
 .register-page {
-  width: 100%;
+  display: flex;
   height: 100vh;
+  background: $bg-white;
+}
+.register-brand {
+  flex: 1;
+  background: linear-gradient(
+    135deg,
+    $primary-dark,
+    $primary-color,
+    $primary-light
+  );
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  position: relative;
+  overflow: hidden;
 }
-
+.brand-content {
+  text-align: center;
+  color: #fff;
+  position: relative;
+  z-index: 1;
+}
+.brand-icon {
+  font-size: 72px;
+  margin-bottom: 16px;
+}
+.brand-content h1 {
+  font-size: 36px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.brand-subtitle {
+  font-size: 16px;
+  opacity: 0.85;
+}
+.register-form-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: $bg-color;
+}
 .register-card {
-  width: 420px;
+  width: 400px;
   padding: 40px;
-  background: #fff;
+  background: $bg-white;
   border-radius: $border-radius-lg;
-  box-shadow: $shadow-lg;
+  box-shadow: $shadow-md;
 }
-
 .register-header {
   text-align: center;
-  margin-bottom: 32px;
-
-  .register-logo {
-    width: 48px;
-    height: 48px;
-    margin-bottom: 12px;
-  }
-
+  margin-bottom: 28px;
   h2 {
-    font-size: 22px;
+    font-size: 24px;
+    font-weight: 600;
     color: $text-primary;
     margin-bottom: 8px;
   }
-
   p {
-    font-size: 13px;
+    font-size: 14px;
     color: $text-secondary;
   }
 }
-
 .register-btn {
   width: 100%;
+  height: 44px;
+  font-size: 16px;
+  font-weight: 600;
 }
-
 .register-footer {
   text-align: center;
-  font-size: 13px;
+  font-size: 14px;
   color: $text-secondary;
-
   a {
     color: $primary-color;
+    font-weight: 600;
     margin-left: 4px;
-
-    &:hover {
-      text-decoration: underline;
-    }
+    text-decoration: none;
   }
 }
 </style>

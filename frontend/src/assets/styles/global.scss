@@ -1,8 +1,12 @@
-// ═══════════════════════════════════════════════════════
-// 全局样式 — 通用类名、布局辅助
-// ═══════════════════════════════════════════════════════
-
 @use './reset.scss';
+
+// ── 全局字体 ────────────────────────────────────────
+body {
+  font-family: $font-family;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: $text-primary;
+}
 
 // ── 页面容器 ────────────────────────────────────────
 .page-container {
@@ -12,11 +16,13 @@
 
 // ── 卡片容器 ────────────────────────────────────────
 .card-container {
-  background: #fff;
+  background: $bg-white;
   border-radius: $border-radius-md;
   box-shadow: $shadow-sm;
   padding: $spacing-lg;
   margin-bottom: $spacing-md;
+  transition: box-shadow 0.3s ease;
+  &:hover { box-shadow: $shadow-md; }
 }
 
 // ── Flex 布局辅助 ───────────────────────────────────
@@ -39,16 +45,25 @@
   white-space: nowrap;
 }
 
-// ── 滚动条美化 ──────────────────────────────────────
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+// ── Element Plus 主题覆盖 ────────────────────────────
+:root {
+  --el-color-primary: #{$primary-color};
+  --el-color-primary-light-3: #{$primary-light};
+  --el-color-primary-dark-2: #{$primary-dark};
+  --el-font-family: #{$font-family};
+  --el-border-radius-base: #{$border-radius-sm};
 }
 
-::-webkit-scrollbar-thumb {
-  background: #c0c4cc;
-  border-radius: 3px;
+// ── 滚动条美化 ──────────────────────────────────────
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: #d9d9d9; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #bfbfbf; }
+
+// ── 全局过渡动画 ────────────────────────────────────
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 0.3s ease;
 }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 
 ::-webkit-scrollbar-track {
   background: transparent;

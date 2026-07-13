@@ -194,7 +194,7 @@
       <el-form :model="trainForm" label-width="120px">
         <el-form-item label="检测场景">
           <el-select v-model="trainForm.scene_id" placeholder="选择场景">
-            <el-option label="遥感目标检测" :value="1" />
+            <el-option label="胸片X光病灶检测" :value="3" />
           </el-select>
         </el-form-item>
         <el-form-item label="基础模型">
