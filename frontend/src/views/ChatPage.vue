@@ -68,6 +68,22 @@
 
     <!-- 快捷操作栏 -->
     <div class="quick-actions">
+      <el-select
+        v-if="userStore.userType === 'doctor' || userStore.userType === 'admin'"
+        v-model="selectedPatientId"
+        placeholder="选择患者（可选）"
+        clearable
+        size="small"
+        style="width: 220px"
+        @change="onPatientChange"
+      >
+        <el-option
+          v-for="p in patientList"
+          :key="p.id"
+          :label="`${p.patient_code} ${p.real_name || p.username}`"
+          :value="p.id"
+        />
+      </el-select>
       <el-button @click="quickDetect('single')" :disabled="agentStore.isLoading"
         >📷 单图检测</el-button
       >
@@ -113,6 +129,7 @@
 
 <script setup>
 import { detectBatch, detectSingle, detectZip } from "@/api/detection";
+import { getPatients } from "@/api/patient";
 import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
 import { useUserStore } from "@/stores/user";
@@ -128,6 +145,8 @@ const inputText = ref("");
 const selectedFiles = ref([]);
 const msgListRef = ref(null);
 const fileInputRef = ref(null);
+const selectedPatientId = ref(null);
+const patientList = ref([]);
 
 function scrollBottom() {
   nextTick(() => {
@@ -171,6 +190,23 @@ async function sendMsg() {
   });
   inputText.value = "";
   selectedFiles.value = [];
+
+  // ── "生成报告" 直接调 API ──
+  if (text.includes("生成报告") && !files.length) {
+    const last = agentStore.messages[agentStore.messages.length - 2]; // user msg
+    try {
+      const res = await request.post("/reports/generate", { task_id: 0 });
+      const aiMsg = agentStore.messages[agentStore.messages.length - 1];
+      aiMsg.content = res.content;
+      aiMsg.loading = false;
+    } catch (e) {
+      const aiMsg = agentStore.messages[agentStore.messages.length - 1];
+      aiMsg.content = `生成报告失败：${e.response?.data?.detail || e.message}`;
+      aiMsg.loading = false;
+    }
+    scrollBottom();
+    return;
+  }
 
   // AI 加载占位
   agentStore.addMessage({ role: "assistant", content: "", loading: true });
@@ -245,7 +281,7 @@ async function sendMsg() {
   let fullContent = "";
   const stop = streamChat(
     "/api/chat/stream",
-    { message: text },
+    { message: text, patient_profile_id: selectedPatientId.value || undefined },
     {
       onMessage: (data) => {
         if (data.type === "text_chunk") {
@@ -272,6 +308,25 @@ async function sendMsg() {
     },
   );
   agentStore.abortController = stop;
+}
+
+function onPatientChange() {
+  if (selectedPatientId.value) {
+    const p = patientList.value.find((pp) => pp.id === selectedPatientId.value);
+    ElMessage.info(
+      `已切换到患者：${p?.patient_code || selectedPatientId.value}`,
+    );
+  }
+}
+
+async function loadPatients() {
+  if (userStore.userType === "doctor" || userStore.userType === "admin") {
+    try {
+      patientList.value = (await getPatients()).items;
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function stopChat() {
@@ -338,6 +393,7 @@ async function quickDetect(type) {
 }
 
 onMounted(() => {
+  loadPatients();
   if (agentStore.messages.length === 0) {
     agentStore.addMessage({
       role: "assistant",

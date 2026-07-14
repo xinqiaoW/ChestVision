@@ -159,7 +159,11 @@ class DetectionService:
                     )
 
         # 绘制标注图像
-        annotated_path = cls._draw_boxes(image_path, objects, img)
+        annotated_path = (
+            cls._draw_boxes(image_path, objects, img)
+            if os.path.exists(image_path)
+            else ""
+        )
 
         return {
             "objects": objects,
@@ -174,7 +178,11 @@ class DetectionService:
     def _draw_boxes(cls, image_path: str, objects: list, img: np.ndarray = None) -> str:
         """在图像上绘制检测框并保存"""
         if img is None:
+            if not os.path.exists(image_path):
+                return ""
             img = cv2.imread(image_path)
+        if img is None:
+            return ""
 
         annotated = img.copy()
 

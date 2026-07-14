@@ -1,54 +1,125 @@
 # 🫁 ChestVision — 胸片X光智能分析系统
 
-> 基于 YOLOv11 的胸部 X 光病灶检测智能体平台 | 西安交通大学
+> 基于 YOLOv11 的胸部 X 光 AI 辅助诊断平台 | 医患协同 · 病史感知 · 智能报告
 
-[![Tech](https://img.shields.io/badge/YOLO-v11x-00ADD8)](https://github.com/ultralytics/ultralytics)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://python.org)
 [![Vue](https://img.shields.io/badge/Vue-3.5-green)](https://vuejs.org)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-4169E1)](https://postgresql.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+
+---
 
 ## 📖 项目简介
 
-ChestVision 是一个以**对话为核心交互方式**的胸部 X 光 AI 辅助诊断平台。支持单图/批量/ZIP 上传，自动调用 YOLOv11x 模型检测 10 种常见胸部病变，LLM 智能分析并生成可视化标注结果。
+ChestVision 是一个**医患协同的胸部 X 光 AI 辅助诊断平台**。系统支持三种用户角色（管理员/医生/病人），集成 YOLOv11 深度学习模型自动检测 10 种常见胸部病变，并通过大语言模型（通义千问）结合患者历史病例进行综合分析，生成结构化诊断报告。
 
-**检测类别（10 种）** ：肺不张、钙化、实变、积液、肺气肿、纤维化、骨折、肿块、结节、气胸
+**检测类别**：肺不张、钙化、实变、积液、肺气肿、纤维化、骨折、肿块、结节、气胸
 
-## 🎯 核心功能
+---
 
+## 👥 三种用户角色
+
+| 角色 | 核心能力 |
+|------|----------|
+| ⚙️ **管理员** | 管理用户、分配医患关系、查看全部数据、统计分析 |
+| 👨‍⚕️ **医生** | 管理分配的 patients、编辑病例病史、AI 综合分析、生成报告 |
+| 👤 **病人** | 上传个人胸片、查看检测结果和 AI 分析、查看自己的病例和报告 |
+
+---
+
+## 🎯 功能矩阵
+
+### 🩻 病灶检测
 | 功能 | 说明 |
 |------|------|
-| 🧠 **AI 病灶检测** | 上传胸片，YOLOv11x 自动识别 10 种病变，返回标注图 + 统计 |
-| 💬 **智能对话** | 自然语言触发检测 + LLM 分析解读（双通道架构） |
-| ⚡ **快捷检测** | 点击按钮直调 API，零延迟，不依赖 LLM |
-| 📊 **检测工作台** | 独立检测页面，可视化病灶列表 + 置信度 |
-| 🏋️ **模型训练** | 支持在线训练、评估、导出 YOLO 模型 |
-| 🔐 **用户权限** | JWT 认证 + RBAC 角色权限管理 |
+| 单图检测 | 上传一张胸片，YOLOv11 自动识别病变并绘制标注框 |
+| 批量检测 | 多张胸片批量处理，汇总统计 |
+| ZIP 检测 | 上传 ZIP 压缩包，自动解压并批量检测 |
+| 标注可视化 | 检测框叠加原图，病灶类别/置信度/位置一目了然 |
+
+### 🤖 AI 智能分析
+| 功能 | 说明 |
+|------|------|
+| 病史感知分析 | 检测时自动拉取患者历史病例 + 历史检测，AI 综合对比判断 |
+| 风险评级 | 自动评估 low / medium / high / critical 四级风险 |
+| 智能对话 | 自然语言提问，AI 实时回答（支持 SSE 流式输出） |
+| 上下文感知 | 对话自动注入患者病史，追问时 AI 结合历史信息回答 |
+| 系统查询 | 询问"有几个病人""我的病人有哪些"，AI 按权限回答 |
+
+### 📋 病例管理
+| 功能 | 说明 |
+|------|------|
+| 结构化病例 | 主诉、现病史、既往史、家族史、体格检查、诊断、治疗方案 |
+| 病例编辑 | 医生创建/编辑所管病人病例，支持草稿/完成/审核状态切换 |
+| 病例查看 | 病人可查看自己的全部病例记录 |
+
+### 📊 数据统计
+| 功能 | 说明 |
+|------|------|
+| 总览卡片 | 检测总次数、病灶总数、平均耗时、高风险案例数 |
+| 趋势图表 | 近 7 天检测量折线图 |
+| 病灶分布 | 10 种病变检出占比饼图 |
+| 风险分布 | 风险等级柱状图 |
+| 医生工作量 | 每位医生的病人数、检测数、检出病灶数（管理员可见） |
+
+### 📝 检测报告
+| 功能 | 说明 |
+|------|------|
+| 一键生成 | 对话中说"生成报告"，自动生成结构化诊断报告 |
+| 报告内容 | 患者信息 + 检测结果表 + AI 综合分析 + 风险评级 + 建议 |
+
+### 🔐 权限与安全
+| 功能 | 说明 |
+|------|------|
+| 三种用户类型 | 注册时选择 admin / doctor / patient |
+| RBAC 权限 | 角色-权限精细化控制 |
+| 医患关系 | 管理员分配病人给医生，数据按权限隔离 |
+| 侧边栏差异化 | 不同角色看到不同菜单 |
+| JWT 认证 | Token 登录，自动续期 |
+
+---
 
 ## 🏗️ 技术栈
 
 ```
-前端：Vue 3 + Element Plus + Pinia + ECharts
-后端：FastAPI + SQLAlchemy + PostgreSQL + Redis + MinIO
-AI：  YOLOv11x + LangChain + 通义千问(LLM)
-基础设施：Docker Compose (PostgreSQL, Redis, MinIO)
+前端    Vue 3 + Element Plus + Pinia + ECharts + Markdown
+后端    FastAPI + SQLAlchemy 2.0 + Alembic + LangChain
+AI      YOLOv11 (Ultralytics) + 通义千问 (Qwen-plus)
+数据库   PostgreSQL 15 + Pgvector
+缓存    Redis 7
+存储    MinIO
+部署    Docker Compose
 ```
+
+---
+
+## 🗄️ 数据库（24 张表）
+
+| 模块 | 表 |
+|------|-----|
+| 用户与角色 | `users`, `roles`, `permissions`, `user_roles`, `role_permissions`, `doctor_patient_relations` |
+| 检测业务 | `detection_scenes`, `detection_tasks`, `detection_results` |
+| 模型管理 | `training_tasks`, `training_metrics`, `model_versions` |
+| 智能对话 | `chat_sessions`, `chat_messages`, `chat_message_attachments` |
+| Agent 管理 | `agent_registry`, `agent_invocations`, `agent_teams` |
+| 患者与病例 | `patient_profiles`, `medical_records`, `medical_record_attachments`, `cxr_images`, `detection_reports` |
+| 系统运维 | `operation_logs` |
+
+---
 
 ## 🚀 快速启动
 
 ### 环境要求
-
 - Python 3.11+
 - Node.js 18+
 - Docker Desktop
 
 ### 1. 启动基础设施
-
 ```bash
 docker-compose up -d
 ```
 
 ### 2. 初始化数据库
-
 ```bash
 cd backend
 pip install -r requirements.txt
@@ -56,27 +127,18 @@ alembic upgrade head
 python tools/init_db.py
 ```
 
-### 3. 配置 LLM（可选，用于智能对话）
-
-编辑 `backend/.env`，填入通义千问 API Key：
-
+### 3. 配置 LLM
+编辑 `backend/.env`：
 ```env
 QWEN_API_KEY=你的API密钥
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen-plus
 ```
-
-> 快捷检测通道不需要 LLM，可跳过此步。
 
 ### 4. 放置模型权重
-
-将训练好的 `best.pt` 放入 `backend/models/`，然后注册：
-
-```bash
-python tools/register_trained_model.py
-```
+将 `best.pt` 放入 `backend/models/`
 
 ### 5. 启动服务
-
 ```bash
 # 终端1：后端
 cd backend && python main.py
@@ -85,54 +147,62 @@ cd backend && python main.py
 cd frontend && npm install && npm run dev
 ```
 
-访问 http://localhost:5173 ，默认管理员账号：`admin` / `admin123`
+访问 **http://localhost:5173**，默认管理员：`admin` / `admin123`
+
+---
 
 ## 📁 项目结构
 
 ```
 ChestVision/
-├── backend/                  # FastAPI 后端
+├── backend/
+│   ├── main.py                  # FastAPI 入口
 │   ├── app/
-│   │   ├── agent/           # 智能体模块（ReAct Agent）
-│   │   ├── api/             # API 路由（auth/chat/detection/training）
-│   │   ├── config/          # 全局配置
-│   │   ├── database/        # 数据库连接
-│   │   ├── entity/          # ORM 模型 + Pydantic Schema
-│   │   ├── middleware/       # 请求日志中间件
-│   │   ├── services/        # 业务逻辑（检测/用户）
-│   │   ├── storage/         # MinIO 客户端
-│   │   └── training/        # 训练服务
-│   ├── alembic/             # 数据库迁移
-│   ├── models/              # YOLO 模型权重
-│   └── tools/               # 工具脚本（数据转换/初始化/注册）
-├── frontend/                # Vue 3 前端
+│   │   ├── agent/               # 智能体（ReAct Agent + 工具）
+│   │   ├── api/                 # API 路由
+│   │   │   ├── auth.py          # 认证（注册/登录）
+│   │   │   ├── chat.py          # 对话（SSE 流式 + 病史注入）
+│   │   │   ├── detection.py     # 检测（YOLO + 入库 + AI分析）
+│   │   │   ├── patient.py       # 患者管理
+│   │   │   ├── medical_record.py # 病例管理
+│   │   │   ├── dashboard.py     # 统计看板
+│   │   │   └── report.py        # 报告生成
+│   │   ├── config/              # 全局配置
+│   │   ├── core/                # 安全/日志/异常
+│   │   ├── database/            # 数据库连接
+│   │   ├── entity/              # ORM 模型 + Schema
+│   │   ├── services/            # 检测服务 + 用户服务
+│   │   └── storage/             # MinIO 客户端
+│   ├── alembic/                 # 数据库迁移
+│   ├── models/                  # YOLO 权重
+│   └── tools/                   # 工具脚本
+├── frontend/
 │   └── src/
-│       ├── api/             # API 封装
-│       ├── components/      # 组件（布局/检测卡片）
-│       ├── router/          # 路由
-│       ├── stores/          # Pinia 状态管理
-│       ├── utils/           # 工具函数（SSE/Markdown）
-│       └── views/           # 页面（对话/检测/训练/历史/看板）
-├── docker-compose.yml       # Docker 基础服务
-└── yolo11x_train/           # 训练实验（已 .gitignore）
+│       ├── views/
+│       │   ├── ChatPage.vue           # 智能对话（核心页面）
+│       │   ├── DetectionPage.vue      # 检测工作台
+│       │   ├── HistoryPage.vue        # 历史记录
+│       │   ├── DashboardPage.vue      # 数据看板
+│       │   ├── PatientManagePage.vue  # 患者管理
+│       │   ├── MedicalRecordPage.vue  # 病例管理
+│       │   ├── RegisterPage.vue       # 注册
+│       │   └── LoginPage.vue          # 登录
+│       ├── components/          # 组件
+│       ├── stores/              # Pinia 状态
+│       └── utils/               # 工具函数
+├── docker-compose.yml
+└── yolo11x_train/               # 训练实验
 ```
+
+---
 
 ## 📊 数据集
 
-本项目使用 [ChestX-Det10](https://arxiv.org/abs/2006.10550) 数据集，包含 3,543 张胸部 X 光图像，由 3 位认证放射科医师标注 10 种常见胸部病变的边界框。
+本项目基于 [ChestX-Det10](https://arxiv.org/abs/2006.10550) 数据集训练，包含 3,543 张胸部 X 光图像，由 3 位认证放射科医师标注。
 
-```bibtex
-@misc{liu2020chestxdet10,
-    title={ChestX-Det10: Chest X-ray Dataset on Detection of Thoracic Abnormalities},
-    author={Jingyu Liu and Jie Lian and Yizhou Yu},
-    year={2020},
-    eprint={2006.10550v3},
-    archivePrefix={arXiv},
-    primaryClass={eess.IV}
-}
-```
+---
 
 ## 👥 团队
 
-- 西安交通大学 · 胸片X光多智能体分析系统小组
+西安交通大学 · 胸片X光多智能体分析系统小组
 

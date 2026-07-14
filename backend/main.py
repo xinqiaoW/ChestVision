@@ -2,10 +2,12 @@ from contextlib import asynccontextmanager
 
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
+from app.api.dashboard import router as dashboard_router
 from app.api.detection import router as detection_router
 from app.api.health import router as health_router
 from app.api.medical_record import router as medical_record_router
 from app.api.patient import router as patient_router
+from app.api.report import router as report_router
 from app.api.training import router as training_router  # 训练 API 路由
 from app.config.settings import settings
 from app.core.exceptions import register_exception_handlers
@@ -71,6 +73,8 @@ app.include_router(detection_router)  # 注册检测 API 路由
 app.include_router(chat_router)  # 注册对话 API 路由
 app.include_router(patient_router)  # 注册患者管理 API 路由
 app.include_router(medical_record_router)  # 注册病例管理 API 路由
+app.include_router(dashboard_router)  # 注册数据看板 API 路由
+app.include_router(report_router)  # 注册检测报告 API 路由
 
 
 @app.get("/")
