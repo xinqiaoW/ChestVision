@@ -58,6 +58,18 @@ const routes = [
         component: () => import("@/views/DashboardPage.vue"),
         meta: { title: "数据看板", icon: "DataAnalysis" },
       },
+      {
+        path: "patients",
+        name: "Patients",
+        component: () => import("@/views/PatientManagePage.vue"),
+        meta: { title: "患者管理", icon: "User" },
+      },
+      {
+        path: "medical-records",
+        name: "MedicalRecords",
+        component: () => import("@/views/MedicalRecordPage.vue"),
+        meta: { title: "病例管理", icon: "Document" },
+      },
     ],
   },
 

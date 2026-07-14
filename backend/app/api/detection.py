@@ -23,6 +23,7 @@ from app.entity.db_models import (
     DetectionScene,
     DetectionTask,
     ModelVersion,
+    PatientProfile,
     User,
 )
 from app.services.detection_service import detection_service
@@ -102,6 +103,17 @@ async def detect(
             logger.error("检测推理失败: %s", str(e), exc_info=True)
             raise HTTPException(status_code=500, detail=f"检测推理失败: {str(e)}")
 
+        # ── 关联患者档案（v3.0）──
+        patient_profile_id = None
+        if current_user.user_type == "patient":
+            profile = (
+                db.query(PatientProfile)
+                .filter(PatientProfile.user_id == current_user.id)
+                .first()
+            )
+            if profile:
+                patient_profile_id = profile.id  # type: ignore[arg-type]
+
         # ── 保存检测记录到数据库 ──
         task = detection_service.save_detection_task(
             db=db,
@@ -110,6 +122,7 @@ async def detect(
             model_version_id=model_version.id if model_version else None,  # type: ignore[arg-type]
             image_path=file.filename or "",
             predict_result=result,
+            patient_profile_id=patient_profile_id,
         )
 
         # ── 返回结果 ──

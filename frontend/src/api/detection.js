@@ -28,6 +28,16 @@ export function detectZip(formData) {
   });
 }
 
+/** 检测历史列表 */
+export function getDetectionTasks(params) {
+  return request.get("/detection/tasks", { params });
+}
+
+/** 检测任务详情 */
+export function getDetectionTaskDetail(taskId) {
+  return request.get(`/detection/task/${taskId}`);
+}
+
 /** 获取检测任务状态 */
 export function getDetectionStatus(taskId) {
   return request.get(`/detection/status/${taskId}`);

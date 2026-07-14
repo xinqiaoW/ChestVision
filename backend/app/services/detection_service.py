@@ -229,6 +229,7 @@ class DetectionService:
         image_path: str,
         predict_result: dict,
         task_type: str = "single",
+        patient_profile_id: int = None,
     ) -> DetectionTask:
         """将检测结果保存到数据库"""
         task = DetectionTask(
@@ -243,6 +244,7 @@ class DetectionService:
             conf_threshold=0.25,
             iou_threshold=0.45,
             image_size=640,
+            patient_profile_id=patient_profile_id,
             created_at=datetime.now(),
             completed_at=datetime.now(),
         )
