@@ -71,7 +71,7 @@ const allMenuItems = [
     path: "/detection",
     title: "检测工作台",
     icon: Camera,
-    roles: ["admin", "doctor", "patient"],
+    roles: [],
   },
   {
     path: "/patients",

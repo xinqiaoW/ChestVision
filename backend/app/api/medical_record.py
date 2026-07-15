@@ -18,6 +18,7 @@ from app.entity.db_models import (
     User,
 )
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -294,3 +295,92 @@ async def delete_record(
     db.delete(record)
     db.commit()
     return {"message": "已删除"}
+
+
+@router.get("/{record_id}/print", response_class=HTMLResponse)
+async def print_medical_record(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """打印病例为 HTML（浏览器打印即 PDF）"""
+    import markdown
+
+    record = db.query(MedicalRecord).filter(MedicalRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="病例不存在")
+
+    profile = (
+        db.query(PatientProfile)
+        .filter(PatientProfile.id == record.patient_profile_id)
+        .first()
+    )
+    patient_code = profile.patient_code if profile else "-"
+    patient_name = profile.real_name or "-" if profile else "-"
+
+    type_map = {
+        "outpatient": "门诊",
+        "inpatient": "住院",
+        "follow_up": "复诊",
+        "emergency": "急诊",
+    }
+    status_map = {"draft": "草稿", "completed": "已完成", "reviewed": "已审核"}
+
+    md = f"""# 病例记录
+
+**患者编号**: {patient_code}  
+**患者姓名**: {patient_name}  
+**就诊类型**: {type_map.get(record.record_type, record.record_type)}  
+**状态**: {status_map.get(record.record_status, record.record_status)}  
+**就诊日期**: {record.visit_date or "-"}
+
+---
+
+## 主诉
+{record.chief_complaint or "无"}
+
+## 现病史
+{record.present_illness or "无"}
+
+## 既往史
+{record.past_history or "无"}
+
+## 家族史
+{record.family_history or "无"}
+
+## 体格检查
+{record.physical_examination or "无"}
+
+## 诊断
+{record.diagnosis or "无"}
+
+## 治疗方案
+{record.treatment_plan or "无"}
+
+## 医生备注
+{record.doctor_notes or "无"}
+
+---
+
+*创建时间: {record.created_at} | 最后更新: {record.updated_at}*
+"""
+
+    html_body = markdown.markdown(md, extensions=["tables"])
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>病例记录 - {patient_code}</title>
+<style>
+body {{ font-family: 'Microsoft YaHei', sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; color: #333; }}
+h1 {{ color: #2A9D8F; border-bottom: 2px solid #2A9D8F; padding-bottom: 8px; }}
+h2 {{ color: #555; margin-top: 20px; font-size: 16px; }}
+@media print {{ body {{ margin: 0; }} }}
+</style>
+</head>
+<body>
+{html_body}
+</body>
+</html>"""
+
+    return HTMLResponse(content=html)

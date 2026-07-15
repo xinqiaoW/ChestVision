@@ -45,6 +45,15 @@
               class="message-content markdown-body"
               v-html="renderMd(msg.content)"
             ></div>
+            <div v-if="msg.downloadPdfUrl" class="msg-actions">
+              <a
+                href="#"
+                @click.prevent="downloadReport(msg.downloadPdfUrl)"
+                class="download-link"
+              >
+                📥 下载/打印报告
+              </a>
+            </div>
             <DetectionResultCard
               v-if="msg.detectionResult"
               :result="msg.detectionResult"
@@ -133,11 +142,13 @@ import { getPatients } from "@/api/patient";
 import DetectionResultCard from "@/components/DetectionResultCard.vue";
 import { useAgentStore } from "@/stores/agent";
 import { useUserStore } from "@/stores/user";
-import { renderMarkdown } from "@/utils/markdown";
 import request from "@/utils/request";
 import { streamChat } from "@/utils/stream";
 import { ElMessage } from "element-plus";
+import MarkdownIt from "markdown-it";
 import { nextTick, onMounted, ref } from "vue";
+
+const md = new MarkdownIt({ breaks: true, html: false });
 
 const agentStore = useAgentStore();
 const userStore = useUserStore();
@@ -171,7 +182,7 @@ function onFileSelect(e) {
 }
 
 function renderMd(text) {
-  return renderMarkdown(text || "");
+  return md.render(text || "");
 }
 
 async function sendMsg() {
@@ -193,11 +204,13 @@ async function sendMsg() {
 
   // ── "生成报告" 直接调 API ──
   if (text.includes("生成报告") && !files.length) {
-    const last = agentStore.messages[agentStore.messages.length - 2]; // user msg
+    agentStore.addMessage({ role: "assistant", content: "", loading: true });
+    scrollBottom();
     try {
       const res = await request.post("/reports/generate", { task_id: 0 });
       const aiMsg = agentStore.messages[agentStore.messages.length - 1];
       aiMsg.content = res.content;
+      aiMsg.downloadPdfUrl = `/api/reports/${res.id}/pdf`;
       aiMsg.loading = false;
     } catch (e) {
       const aiMsg = agentStore.messages[agentStore.messages.length - 1];
@@ -327,6 +340,17 @@ async function loadPatients() {
       /* ignore */
     }
   }
+}
+
+async function downloadReport(url) {
+  const token = localStorage.getItem("chestx_token");
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const html = await res.text();
+  const win = window.open("", "_blank");
+  win.document.write(html);
+  win.document.close();
 }
 
 function stopChat() {
@@ -481,6 +505,22 @@ onMounted(() => {
   img {
     max-width: 220px;
     border-radius: $border-radius-sm;
+  }
+}
+.msg-actions {
+  margin-top: 10px;
+}
+.download-link {
+  display: inline-block;
+  padding: 6px 14px;
+  background: #2a9d8f;
+  color: #fff;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  &:hover {
+    background: #238b7e;
   }
 }
 

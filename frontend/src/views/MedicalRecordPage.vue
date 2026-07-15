@@ -66,6 +66,13 @@
             <el-button
               size="small"
               text
+              type="success"
+              @click="printRecord(row)"
+              >打印</el-button
+            >
+            <el-button
+              size="small"
+              text
               type="warning"
               @click="showEditDialog(row)"
               v-if="canEdit"
@@ -401,6 +408,17 @@ async function handleSave() {
   } finally {
     saving.value = false;
   }
+}
+
+async function printRecord(row) {
+  const token = localStorage.getItem("chestx_token");
+  const res = await fetch(`/api/medical-records/${row.id}/print`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const html = await res.text();
+  const win = window.open("", "_blank");
+  win.document.write(html);
+  win.document.close();
 }
 
 async function handleDelete(row) {
