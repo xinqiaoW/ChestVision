@@ -64,6 +64,71 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <!-- 模型版本管理 — 全局默认模型切换 -->
+    <el-card class="model-versions-card" shadow="never">
+      <template #header>
+        <div class="card-header">
+          <span>📦 模型版本管理（全局默认模型）</span>
+          <el-button text @click="fetchModelVersions">
+            <el-icon><Refresh /></el-icon>刷新
+          </el-button>
+        </div>
+      </template>
+      <el-table
+        :data="modelVersions"
+        stripe
+        v-loading="loadingVersions"
+        empty-text="暂无模型版本，请先训练并导出模型"
+      >
+        <el-table-column label="默认" width="70">
+          <template #default="{ row }">
+            <el-tag v-if="row.is_default" type="success" size="small"
+              >当前使用</el-tag
+            >
+          </template>
+        </el-table-column>
+        <el-table-column prop="model_name" label="模型名称" min-width="160" />
+        <el-table-column prop="version" label="版本" width="90" />
+        <el-table-column label="mAP@50" width="100">
+          <template #default="{ row }">
+            <span :style="{ color: row.map50 ? '#67c23a' : '#909399' }">
+              {{ row.map50 ? (row.map50 * 100).toFixed(1) + "%" : "-" }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="mAP@50-95" width="110">
+          <template #default="{ row }">
+            {{ row.map50_95 ? (row.map50_95 * 100).toFixed(1) + "%" : "-" }}
+          </template>
+        </el-table-column>
+        <el-table-column label="大小" width="90">
+          <template #default="{ row }">
+            {{
+              row.file_size
+                ? (row.file_size / 1024 / 1024).toFixed(1) + "MB"
+                : "-"
+            }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="创建时间" width="170" />
+        <el-table-column label="操作" width="140" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="!row.is_default"
+              size="small"
+              type="primary"
+              @click="setDefaultModel(row.id)"
+              :loading="settingDefault === row.id"
+            >
+              设为当前使用
+            </el-button>
+            <el-tag v-else type="success" size="small">已是默认</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <el-card v-if="selectedTask" class="monitor-card" shadow="never">
       <template #header>
         <div class="card-header">
@@ -118,7 +183,7 @@
         <el-button type="primary" @click="validateModel" :loading="validating"
           >评估模型</el-button
         >
-        <el-button type="success" @click="showExportDialog = true"
+        <el-button type="success" @click="exportModel" :loading="exporting"
           >导出模型</el-button
         >
         <el-button @click="downloadModel">下载权重</el-button>
@@ -185,40 +250,6 @@
       </el-table>
     </el-card>
 
-    <!-- 【Day 7 新增】导出模型对话框 -->
-    <el-dialog
-      v-model="showExportDialog"
-      title="导出模型"
-      width="520px"
-      :close-on-click-modal="false"
-    >
-      <el-form :model="exportForm" label-width="100px">
-        <el-form-item label="版本号">
-          <el-input v-model="exportForm.version" placeholder="留空则自动生成，如 v1.0.0" />
-        </el-form-item>
-        <el-form-item label="版本描述">
-          <el-input
-            v-model="exportForm.description"
-            type="textarea"
-            :rows="3"
-            placeholder="记录数据、参数或效果变化"
-          />
-        </el-form-item>
-        <el-form-item label="设为默认">
-          <el-switch v-model="exportForm.set_default" />
-        </el-form-item>
-        <el-form-item label="上传 MinIO">
-          <el-switch v-model="exportForm.upload_minio" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showExportDialog = false">取消</el-button>
-        <el-button type="primary" @click="exportModel" :loading="exporting">
-          确认导出
-        </el-button>
-      </template>
-    </el-dialog>
-
     <el-dialog
       v-model="showCreateDialog"
       title="新建训练任务"
@@ -258,7 +289,7 @@
         </el-form-item>
         <el-form-item label="检测场景">
           <el-select v-model="trainForm.scene_id" placeholder="选择场景">
-            <el-option label="胸片X光病灶检测" :value="1" />
+            <el-option label="胸片X光病灶检测" :value="3" />
           </el-select>
         </el-form-item>
         <el-form-item label="基础模型">
@@ -465,6 +496,11 @@ const uploadFile = ref(null);
 const uploadDatasetName = ref("");
 const uploading = ref(false);
 
+// 模型版本管理
+const modelVersions = ref([]);
+const loadingVersions = ref(false);
+const settingDefault = ref(null);
+
 const selectedDataset = computed(() => {
   return datasetList.value.find((d) => d.name === trainForm.value.dataset_name);
 });
@@ -473,13 +509,6 @@ const selectedDataset = computed(() => {
 const validating = ref(false);
 const exporting = ref(false);
 const evalReport = ref(null);
-const showExportDialog = ref(false);
-const exportForm = ref({
-  version: "",
-  description: "",
-  set_default: false,
-  upload_minio: true,
-});
 const showPredictDialog = ref(false);
 const predictConf = ref(0.25);
 const predictIou = ref(0.45);
@@ -645,22 +674,14 @@ async function fetchMetrics() {
   if (!selectedTask.value) return;
   try {
     const taskId = selectedTask.value.id || selectedTask.value.task?.id;
-    const res = await request.get(`/training/metrics/${taskId}`);
+    const res = await request.get(`/training/metrics/${taskId}`, {
+      silent: true,
+    });
     const metrics = res.metrics || [];
-    const statusRes = await request.get(`/training/status/${taskId}`);
-    if (statusRes) {
-      const latestTask = statusRes.task || {};
-      selectedTask.value = {
-        ...selectedTask.value,
-        ...latestTask,
-        latest_metric: statusRes.latest_metric,
-        is_running: statusRes.is_running,
-      };
-      const index = taskList.value.findIndex((task) => task.id === latestTask.id);
-      if (index >= 0) {
-        taskList.value[index] = { ...taskList.value[index], ...latestTask };
-      }
-    }
+    const statusRes = await request.get(`/training/status/${taskId}`, {
+      silent: true,
+    });
+    if (statusRes) selectedTask.value = { ...selectedTask.value, ...statusRes };
     if (metrics.length > 0) updateCharts(metrics);
   } catch (e) {
     console.error("获取指标失败", e);
@@ -883,13 +904,9 @@ async function exportModel() {
   exporting.value = true;
   try {
     const taskId = selectedTask.value.id || selectedTask.value.task?.id;
-    const payload = {
-      ...exportForm.value,
-      version: exportForm.value.version || null,
-      description: exportForm.value.description || null,
-    };
-    const res = await request.post(`/training/export/${taskId}`, payload);
-    showExportDialog.value = false;
+    const res = await request.post(`/training/export/${taskId}`, {
+      set_default: true,
+    });
     ElMessage.success(`模型已导出: ${res.version}`);
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || "导出失败");
@@ -899,29 +916,17 @@ async function exportModel() {
 }
 
 // 【Day 7 新增】模型操作：下载
-async function downloadModel() {
+function downloadModel() {
   if (!selectedTask.value) return;
   const taskId = selectedTask.value.id || selectedTask.value.task?.id;
-  const token = localStorage.getItem("chestx_token") || "";
-  try {
-    const response = await fetch(`/api/training/download/${taskId}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!response.ok) {
-      throw new Error("下载失败");
-    }
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${selectedTask.value.model_name}_${selectedTask.value.task_uuid}_best.pt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
-  } catch (e) {
-    ElMessage.error("下载失败");
-  }
+  const token = localStorage.getItem("token") || "";
+  const url = `/api/training/download/${taskId}`;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 // 【Day 7 新增】测试图验证：选择文件
@@ -956,7 +961,35 @@ async function doPredict() {
 onMounted(() => {
   fetchTasks();
   fetchDatasets();
+  fetchModelVersions();
 });
+
+// ── 模型版本管理 ──
+async function fetchModelVersions() {
+  loadingVersions.value = true;
+  try {
+    const res = await request.get("/training/models");
+    modelVersions.value = res.models || [];
+  } catch {
+    /* ignore */
+  } finally {
+    loadingVersions.value = false;
+  }
+}
+
+async function setDefaultModel(modelVersionId) {
+  settingDefault.value = modelVersionId;
+  try {
+    await request.post(`/training/models/${modelVersionId}/set-default`);
+    ElMessage.success("全局默认模型已切换，检测接口将使用新模型");
+    await fetchModelVersions();
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "设置失败");
+  } finally {
+    settingDefault.value = null;
+  }
+}
+
 onBeforeUnmount(() => {
   stopPolling();
   window.removeEventListener("resize", handleChartResize);

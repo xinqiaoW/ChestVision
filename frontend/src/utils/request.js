@@ -40,7 +40,12 @@ request.interceptors.response.use(
     return response.data;
   },
   (error) => {
-    const { response } = error;
+    const { response, config } = error;
+
+    // 静默模式：不弹错误提示（用于后台轮询等场景）
+    if (config?.silent) {
+      return Promise.reject(error);
+    }
 
     if (response) {
       switch (response.status) {

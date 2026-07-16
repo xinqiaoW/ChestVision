@@ -16,6 +16,7 @@
 
 import base64
 import os
+import shutil
 import tempfile
 
 import cv2
@@ -289,6 +290,124 @@ async def download_model(
     )
 
 
+# ═══════════════════════════════════════════════════
+# 模型版本管理（全局默认模型切换）
+# ═══════════════════════════════════════════════════
+
+
+@router.get("/models")
+async def list_model_versions(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """获取所有模型版本列表（供训练页切换全局默认模型）"""
+    from app.entity.db_models import (
+        DetectionScene,
+        ModelVersion,
+        TrainingMetric,
+        TrainingTask,
+    )
+
+    scene = db.query(DetectionScene).filter(DetectionScene.name == "chest_xray").first()
+    if not scene:
+        return {"models": []}
+
+    versions = (
+        db.query(ModelVersion)
+        .filter(ModelVersion.scene_id == scene.id)
+        .order_by(ModelVersion.created_at.desc())
+        .all()
+    )
+
+    result = []
+    for v in versions:
+        map50 = v.map50
+        map50_95 = v.map50_95
+        precision = v.precision
+        recall = v.recall
+
+        # 如果 ModelVersion 指标为空，从 TrainingMetric 回退查询
+        if map50 is None and v.training_task_id:
+            last_metric = (
+                db.query(TrainingMetric)
+                .filter(TrainingMetric.task_id == v.training_task_id)
+                .order_by(TrainingMetric.epoch.desc())
+                .first()
+            )
+            if last_metric:
+                map50 = last_metric.map50
+                map50_95 = last_metric.map50_95
+                precision = last_metric.precision
+                recall = last_metric.recall
+
+        result.append(
+            {
+                "id": v.id,
+                "version": v.version,
+                "model_name": v.model_name,
+                "model_type": v.model_type,
+                "map50": map50,
+                "map50_95": map50_95,
+                "precision": precision,
+                "recall": recall,
+                "is_default": v.is_default,
+                "file_size": v.file_size,
+                "created_at": str(v.created_at),
+                "training_task_uuid": (
+                    v.training_task.task_uuid if v.training_task else None
+                ),
+            }
+        )
+
+    return {"models": result}
+
+
+@router.post("/models/{model_version_id}/set-default")
+async def set_default_model(
+    model_version_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """将指定模型版本设为全局默认（检测接口自动使用该模型）"""
+    from app.entity.db_models import ModelVersion
+
+    mv = db.query(ModelVersion).filter(ModelVersion.id == model_version_id).first()
+    if not mv:
+        raise HTTPException(status_code=404, detail="模型版本不存在")
+
+    # 清除同场景其他模型的默认标记
+    db.query(ModelVersion).filter(
+        ModelVersion.scene_id == mv.scene_id,
+        ModelVersion.id != model_version_id,
+    ).update({"is_default": False})
+
+    mv.is_default = True
+    db.commit()
+
+    # 同步更新 models/best.pt 并热重载
+    try:
+        default_path = os.path.join(os.getcwd(), "models", "best.pt")
+        os.makedirs(os.path.dirname(default_path), exist_ok=True)
+        shutil.copy2(mv.model_path, default_path)
+        from app.services.detection_service import detection_service
+
+        detection_service.reload_model()
+        logger.info("全局默认模型已切换并热重载: %s (id=%d)", mv.model_name, mv.id)
+    except Exception as e:
+        logger.warning("模型热重载失败（不影响切换）: %s", str(e))
+
+    logger.info(
+        "用户 %s 设置默认模型: version_id=%d, model=%s",
+        current_user.username,
+        model_version_id,
+        mv.model_name,
+    )
+    return {
+        "message": f"模型 {mv.model_name} (v{mv.version}) 已设为全局默认",
+        "model_version_id": mv.id,
+    }
+
+
 @router.post("/predict")
 async def predict_test_image(
     file: UploadFile = File(..., description="测试图片"),
@@ -316,15 +435,11 @@ async def predict_test_image(
     if task.status != "completed":
         raise HTTPException(status_code=400, detail="训练任务未完成")
 
-    weights_path = os.path.join(
-        os.getcwd(),
-        settings.TRAIN_OUTPUT_DIR,
-        f"task_{task.task_uuid}",
-        "weights",
-        "best.pt",
-    )
-    if not os.path.exists(weights_path):
-        raise HTTPException(status_code=404, detail="模型权重文件不存在")
+    weights_path = training_service._resolve_weights_path(db, task_id)
+    if not weights_path:
+        raise HTTPException(
+            status_code=404, detail="模型权重文件不存在，请确认训练已完成或模型已注册"
+        )
 
     # 保存上传文件
     suffix = os.path.splitext(file.filename)[1] or ".jpg"

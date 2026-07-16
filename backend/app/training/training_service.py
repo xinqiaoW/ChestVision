@@ -26,13 +26,6 @@ logger = get_logger(__name__)
 
 _running_tasks: dict = {}
 _running_lock = threading.Lock()
-_ALLOWED_YOLO11_MODELS = {"yolo11n", "yolo11s", "yolo11m", "yolo11l", "yolo11x"}
-
-
-def _resolve_yolo11_weight(model_name: str) -> str:
-    if model_name not in _ALLOWED_YOLO11_MODELS:
-        raise ValueError(f"仅支持 yolo11 模型名称：{sorted(_ALLOWED_YOLO11_MODELS)}")
-    return f"{model_name}.pt"
 
 
 class TrainingService:
@@ -41,8 +34,6 @@ class TrainingService:
     @staticmethod
     def start_training(db, user_id: int, scene_id: int, config: dict) -> TrainingTask:
         task_uuid = str(uuid.uuid4())[:8]
-        model_name = config.get("model_name", "yolo11n")
-        _resolve_yolo11_weight(model_name)
 
         data_yaml = config.get("data_yaml")
         dataset_path = config.get("dataset_path", "")
@@ -56,7 +47,7 @@ class TrainingService:
             scene_id=scene_id,
             task_uuid=task_uuid,
             status="pending",
-            model_name=model_name,
+            model_name=config.get("model_name", "yolo11n"),
             epochs=config.get("epochs", 50),
             img_size=config.get("img_size", 640),
             batch_size=config.get("batch_size", 8),
@@ -96,12 +87,9 @@ class TrainingService:
             db.commit()
 
             from ultralytics import YOLO
-            from ultralytics.utils import SETTINGS
-
-            SETTINGS.update(wandb=False)
 
             model_name = config.get("model_name", "yolo11n")
-            model = YOLO(_resolve_yolo11_weight(model_name))
+            model = YOLO(model_name)
 
             with _running_lock:
                 _running_tasks[task_uuid] = model
@@ -222,7 +210,8 @@ class TrainingService:
                 .all()
             }
             with open(results_csv, "r", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
+                rows = list(csv.DictReader(f))
+                for row in rows:
                     row = {k.strip(): v.strip() for k, v in row.items()}
                     epoch = int(row.get("epoch", 0)) + 1
                     if epoch in existing_epochs:
@@ -242,6 +231,25 @@ class TrainingService:
                         )
                     )
             db.commit()
+
+            # 同步更新 ModelVersion 指标（供模型版本列表展示 mAP 等）
+            try:
+                from app.entity.db_models import ModelVersion
+
+                mv = (
+                    db.query(ModelVersion)
+                    .filter(ModelVersion.training_task_id == task_id)
+                    .first()
+                )
+                if mv and rows:
+                    last_row = {k.strip(): v.strip() for k, v in rows[-1].items()}
+                    mv.map50 = _safe_float(last_row.get("metrics/mAP50(B)", ""))
+                    mv.map50_95 = _safe_float(last_row.get("metrics/mAP50-95(B)", ""))
+                    mv.precision = _safe_float(last_row.get("metrics/precision(B)", ""))
+                    mv.recall = _safe_float(last_row.get("metrics/recall(B)", ""))
+                    db.commit()
+            except Exception as e:
+                logger.warning("更新ModelVersion指标失败: %s", str(e))
         except Exception as e:
             logger.warning("CSV解析异常：%s", str(e))
             db.rollback()
@@ -380,6 +388,37 @@ class TrainingService:
         return metrics
 
     @staticmethod
+    def _resolve_weights_path(db, task_id: int) -> str:
+        """解析模型权重文件路径（训练输出 → ModelVersion 记录 → 报错）"""
+        from app.entity.db_models import ModelVersion
+
+        task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
+        if not task:
+            return None
+
+        # 1) 优先尝试训练输出路径
+        weights_path = os.path.join(
+            os.getcwd(),
+            settings.TRAIN_OUTPUT_DIR,
+            f"task_{task.task_uuid}",
+            "weights",
+            "best.pt",
+        )
+        if os.path.exists(weights_path):
+            return weights_path
+
+        # 2) 回退到 ModelVersion 记录中的路径（预注册模型等场景）
+        mv = (
+            db.query(ModelVersion)
+            .filter(ModelVersion.training_task_id == task_id)
+            .first()
+        )
+        if mv and mv.model_path and os.path.exists(mv.model_path):
+            return mv.model_path
+
+        return None
+
+    @staticmethod
     def validate_model(
         db, task_id: int, split: str = "val", conf: float = 0.001, iou: float = 0.6
     ) -> dict:
@@ -394,22 +433,24 @@ class TrainingService:
             return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能评估"}
 
         original_cwd = os.getcwd()
-        weights_path = os.path.join(
-            original_cwd,
-            settings.TRAIN_OUTPUT_DIR,
-            f"task_{task.task_uuid}",
-            "weights",
-            "best.pt",
-        )
-        if not os.path.exists(weights_path):
-            return {"error": f"模型权重不存在: {weights_path}"}
+        weights_path = TrainingService._resolve_weights_path(db, task_id)
+        if not weights_path:
+            return {"error": "模型权重文件不存在，请确认训练已完成或模型已注册"}
 
         data_yaml = task.data_yaml
         if not data_yaml or not os.path.exists(data_yaml):
             if task.dataset_path:
-                data_yaml = os.path.join(task.dataset_path, "data.yaml")
+                # 尝试多个可能的 data.yaml 位置
+                candidates = [
+                    os.path.join(task.dataset_path, "data.yaml"),
+                    os.path.join(task.dataset_path, "yolo_dataset", "data.yaml"),
+                ]
+                for candidate in candidates:
+                    if os.path.exists(candidate):
+                        data_yaml = candidate
+                        break
             if not data_yaml or not os.path.exists(data_yaml):
-                return {"error": "data.yaml 不存在"}
+                return {"error": "data.yaml 不存在，无法进行评估"}
 
         # 临时修改 data.yaml 的 path 为绝对路径
         data_yaml_dir = os.path.dirname(os.path.abspath(data_yaml))
@@ -513,16 +554,9 @@ class TrainingService:
             )
             return report
 
-        except Exception as e:
-            db.rollback()
-            logger.error("模型评估异常: task_id=%d, error=%s", task_id, str(e), exc_info=True)
-            return {"error": f"评估失败: {str(e)}"}
         finally:
-            try:
-                with open(data_yaml, "w", encoding="utf-8") as f:
-                    f.write(original_content)
-            except Exception as e:
-                logger.warning("恢复 data.yaml 失败: %s", str(e))
+            with open(data_yaml, "w", encoding="utf-8") as f:
+                f.write(original_content)
 
     @staticmethod
     def export_model(
@@ -543,15 +577,9 @@ class TrainingService:
             return {"error": f"训练任务状态为 {task.status}，只有已完成的任务才能导出"}
 
         original_cwd = os.getcwd()
-        weights_path = os.path.join(
-            original_cwd,
-            settings.TRAIN_OUTPUT_DIR,
-            f"task_{task.task_uuid}",
-            "weights",
-            "best.pt",
-        )
-        if not os.path.exists(weights_path):
-            return {"error": f"模型权重不存在: {weights_path}"}
+        weights_path = TrainingService._resolve_weights_path(db, task_id)
+        if not weights_path:
+            return {"error": "模型权重文件不存在，请确认训练已完成或模型已注册"}
 
         scene = (
             db.query(DetectionScene).filter(DetectionScene.id == task.scene_id).first()
@@ -567,36 +595,6 @@ class TrainingService:
             )
             version = f"v{existing_count + 1}.0.0"
 
-        task_output_dir = os.path.join(
-            original_cwd, settings.TRAIN_OUTPUT_DIR, f"task_{task.task_uuid}"
-        )
-        csv_path = os.path.join(task_output_dir, "results.csv")
-        if not os.path.exists(csv_path):
-            return {"error": f"results.csv 不存在，无法导出模型评估指标: {csv_path}"}
-
-        overall = {}
-        try:
-            with open(csv_path, "r", encoding="utf-8") as f:
-                rows = list(csv.DictReader(f))
-            if not rows:
-                return {"error": f"results.csv 为空，无法导出模型评估指标: {csv_path}"}
-            last_row = {k.strip(): v.strip() for k, v in rows[-1].items()}
-            overall = {
-                "precision": _safe_float(last_row.get("metrics/precision(B)", "")),
-                "recall": _safe_float(last_row.get("metrics/recall(B)", "")),
-                "map50": _safe_float(last_row.get("metrics/mAP50(B)", "")),
-                "map50_95": _safe_float(last_row.get("metrics/mAP50-95(B)", "")),
-            }
-        except Exception as e:
-            logger.warning("读取 results.csv 失败: %s", e)
-            return {"error": f"读取 results.csv 失败，无法导出模型评估指标: {str(e)}"}
-
-        missing_metrics = [key for key, value in overall.items() if value is None]
-        if missing_metrics:
-            return {
-                "error": f"results.csv 缺少有效评估指标，无法导出模型: {', '.join(missing_metrics)}"
-            }
-
         export_dir = os.path.join(original_cwd, "models", f"{scene.name}_{version}")
         os.makedirs(export_dir, exist_ok=True)
 
@@ -605,6 +603,9 @@ class TrainingService:
         logger.info("模型文件已复制: %s → %s", weights_path, exported_weight)
 
         # 复制评估图表
+        task_output_dir = os.path.join(
+            original_cwd, settings.TRAIN_OUTPUT_DIR, f"task_{task.task_uuid}"
+        )
         for plot_name in [
             "confusion_matrix.png",
             "PR_curve.png",
@@ -615,7 +616,29 @@ class TrainingService:
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(export_dir, plot_name))
 
+        # 从 results.csv 读取最终指标
+        csv_path = os.path.join(task_output_dir, "results.csv")
+        overall = {}
         per_class = {}
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    rows = list(csv.DictReader(f))
+                if rows:
+                    last_row = {k.strip(): v.strip() for k, v in rows[-1].items()}
+                    overall = {
+                        "precision": _safe_float(
+                            last_row.get("metrics/precision(B)", "")
+                        ),
+                        "recall": _safe_float(last_row.get("metrics/recall(B)", "")),
+                        "map50": _safe_float(last_row.get("metrics/mAP50(B)", "")),
+                        "map50_95": _safe_float(
+                            last_row.get("metrics/mAP50-95(B)", "")
+                        ),
+                    }
+            except Exception as e:
+                logger.warning("读取 results.csv 失败: %s", e)
+
         # 从已有 ModelVersion 获取每类指标
         existing_version = (
             db.query(ModelVersion)
@@ -754,15 +777,9 @@ class TrainingService:
             return {"error": "训练任务未完成"}
 
         original_cwd = os.getcwd()
-        weights_path = os.path.join(
-            original_cwd,
-            settings.TRAIN_OUTPUT_DIR,
-            f"task_{task.task_uuid}",
-            "weights",
-            "best.pt",
-        )
-        if not os.path.exists(weights_path):
-            return {"error": "模型权重文件不存在"}
+        weights_path = TrainingService._resolve_weights_path(db, task_id)
+        if not weights_path:
+            return {"error": "模型权重文件不存在，请确认训练已完成或模型已注册"}
 
         return {
             "file_path": weights_path,
