@@ -187,15 +187,83 @@ async def chat_stream(
 
         # ── ④ 加载对话历史（DB持久化层）──
         chat_history = []
-        if session_id:
-            try:
-                chat_history = chat_service.build_langchain_history(
-                    session_id=db_session_id,
-                    user_id=current_user.id,
-                )
-                logger.info("加载 %d 条历史消息到 Agent 上下文", len(chat_history))
-            except Exception as e:
-                logger.warning("加载对话历史失败: %s", str(e))
+        try:
+            raw_history = chat_service.build_langchain_history(
+                session_id=db_session_id,
+                user_id=current_user.id,
+            )
+            # 清理历史消息中的文件路径标记，防止 LLM 泄露/hallucinate 临时路径
+            import re
+            for msg in raw_history:
+                clean_content = re.sub(
+                    r'\[附件(图片|多张图片|视频|ZIP)路径:.*?\]', '', msg.content
+                ).strip()
+                if clean_content:
+                    if msg.__class__.__name__ == "HumanMessage":
+                        from langchain_core.messages import HumanMessage
+                        chat_history.append(HumanMessage(content=clean_content))
+                    elif msg.__class__.__name__ == "AIMessage":
+                        from langchain_core.messages import AIMessage
+                        chat_history.append(AIMessage(content=clean_content))
+            logger.info("加载 %d 条历史消息（已清理路径）到 Agent 上下文", len(chat_history))
+        except Exception as e:
+            logger.warning("加载对话历史失败: %s", str(e))
+
+        # ── ④+ 注入上下文（无新图片时从DB查最近检测结果直接告诉AI）──
+        final_message = enhanced_message
+        if not image_path and chat_history:
+            has_prior_ai = any(
+                msg.__class__.__name__ == "AIMessage" for msg in chat_history
+            )
+            if has_prior_ai and len(chat_history) >= 2:
+                # 从 DB 查询用户最近一次完成的检测，获取真实数据
+                try:
+                    from app.database.session import SessionLocal as SL2
+                    from app.entity.db_models import DetectionResult, DetectionTask
+                    db2 = SL2()
+                    try:
+                        last_task = (
+                            db2.query(DetectionTask)
+                            .filter(
+                                DetectionTask.user_id == current_user.id,
+                                DetectionTask.status == "completed",
+                            )
+                            .order_by(DetectionTask.created_at.desc())
+                            .first()
+                        )
+                        if last_task and last_task.total_objects:
+                            # 取病灶明细
+                            details = (
+                                db2.query(DetectionResult)
+                                .filter(DetectionResult.task_id == last_task.id)
+                                .all()
+                            )
+                            lesion_list = "、".join(
+                                f"{r.class_name_cn or r.class_name}"
+                                f"({r.confidence:.0%})"
+                                for r in details[:10]
+                            )
+                            final_message = (
+                                f"「上下文」用户刚才完成了胸片检测，"
+                                f"真实检测结果为：共{last_task.total_objects}个病灶 → {lesion_list}。"
+                                f"现在用户问：「{enhanced_message}」。"
+                                f"请基于以上真实检测数据回答，不要编造其他病灶类型。"
+                            )
+                            logger.info(
+                                "注入检测数据: task=%d, lesions=%s",
+                                last_task.id, lesion_list,
+                            )
+                        else:
+                            # 无检测记录但有历史对话，通用提示
+                            final_message = (
+                                f"「上下文」你与用户已有对话历史。"
+                                f"现在用户继续问：「{enhanced_message}」。"
+                                f"请基于对话历史直接回答，不要索要图片、不要编造数据。"
+                            )
+                    finally:
+                        db2.close()
+                except Exception as e:
+                    logger.warning("查询最近检测结果失败: %s", str(e))
 
         # ── ⑤ Day11: 缓存用户消息到 Redis 记忆 ──
         try:
@@ -215,7 +283,7 @@ async def chat_stream(
             set_current_user(current_user)
 
             async for event in detection_agent.chat_stream(
-                message=enhanced_message,
+                message=final_message,
                 image_path=image_path,
                 chat_history=chat_history if chat_history else None,
                 user_id=current_user.id,
