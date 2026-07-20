@@ -29,12 +29,23 @@ def init_minio():
         print(f"MinIO 初始化失败: {e}")
 
 
+def init_knowledge_base():
+    """启动时预构建知识库索引"""
+    try:
+        from app.rag.retriever import knowledge_retriever
+        knowledge_retriever.build_index()
+        print("知识库索引初始化完成")
+    except Exception as e:
+        print(f"知识库索引初始化失败（将在首次检索时重试）: {e}")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
     print("正在初始化服务...")
     init_minio()
+    init_knowledge_base()
     yield
     # 关闭时执行（如果需要）
     print("服务已关闭")

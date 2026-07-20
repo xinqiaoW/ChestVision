@@ -135,16 +135,19 @@ def _get_patient_context(state: dict, db_session=None) -> str:
 async def detection_node(state: dict, llm: ChatOpenAI = None) -> dict:
     """病灶检测 Agent 节点
 
-    职责：调用 YOLO 模型对上传的胸片进行病灶检测。
+    职责：调用 YOLO 模型对上传的胸片进行病灶检测，并持久化到数据库。
 
     流程：
       1. 从消息中提取图片路径
       2. 调用 detect_single_image / detect_batch_images 工具
-      3. 返回检测摘要
+      3. 持久化检测任务到 DB
+      4. 返回检测摘要
     """
     user_msg = _get_user_message(state)
     detection_result = {}
     task_id = None
+    user_id = state.get("user_id", 0)
+    patient_profile_id = state.get("patient_profile_id")
 
     # ── 提取图片路径 ──
     image_path = state.get("image_path", "")
@@ -192,6 +195,15 @@ async def detection_node(state: dict, llm: ChatOpenAI = None) -> dict:
                 task_id = full_result.get("task_id")
                 detection_result["detections"] = full_result.get("detections", [])
 
+                # ── 持久化检测任务到数据库 ──
+                _persist_detection_task(
+                    user_id=user_id,
+                    patient_profile_id=patient_profile_id,
+                    image_path=image_path,
+                    detection_result=full_result,
+                    task_id=task_id,
+                )
+
         clear_last_result()
 
         logger.info(
@@ -210,6 +222,72 @@ async def detection_node(state: dict, llm: ChatOpenAI = None) -> dict:
     }
 
 
+def _persist_detection_task(
+    user_id: int,
+    patient_profile_id: Any,
+    image_path: str,
+    detection_result: dict,
+    task_id: Any = None,
+):
+    """将检测结果持久化到数据库"""
+    try:
+        from app.database.session import SessionLocal
+        from app.entity.db_models import DetectionTask, PatientProfile
+
+        db = SessionLocal()
+        try:
+            # 验证 patient_profile_id
+            profile_id = None
+            if patient_profile_id:
+                profile = db.query(PatientProfile).filter(
+                    PatientProfile.id == patient_profile_id
+                ).first()
+                if profile:
+                    profile_id = profile.id
+
+            task = DetectionTask(
+                user_id=user_id,
+                patient_profile_id=profile_id,
+                task_type="single",
+                status="completed",
+                total_images=1,
+                total_objects=detection_result.get("total_objects", 0),
+                total_inference_time=detection_result.get("inference_time", 0),
+                risk_level=_estimate_risk_level(detection_result),
+                conf_threshold=0.25,
+                iou_threshold=0.45,
+            )
+            db.add(task)
+            db.commit()
+            db.refresh(task)
+            logger.info("检测任务已入库: task_id=%d, user=%d", task.id, user_id)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("检测任务入库失败（不影响主流程）: %s", str(e))
+
+
+def _estimate_risk_level(detection_result: dict) -> str:
+    """根据检测结果估算风险等级"""
+    class_counts = detection_result.get("class_counts", {})
+    # 危急病灶
+    critical_types = {"Pneumothorax": "气胸", "Effusion": "胸腔积液"}
+    high_risk_types = {"Mass": "肿块", "Nodule": "结节", "Fracture": "骨折"}
+
+    for ct in critical_types:
+        if class_counts.get(ct, 0) > 0:
+            return "critical"
+    for ht in high_risk_types:
+        if class_counts.get(ht, 0) > 0:
+            return "high"
+    total = detection_result.get("total_objects", 0)
+    if total > 3:
+        return "medium"
+    if total > 0:
+        return "low"
+    return "none"
+
+
 # ══════════════════════════════════════════════════════════════
 # 2. 综合诊断 Agent 节点
 # ══════════════════════════════════════════════════════════════
@@ -218,17 +296,18 @@ async def detection_node(state: dict, llm: ChatOpenAI = None) -> dict:
 async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
     """综合诊断 Agent 节点
 
-    职责：结合检测结果 + 患者病史 + 医学知识，给出综合诊断意见。
+    职责：结合检测结果 + 患者病史 + RAG医学知识，给出综合诊断意见。
 
     分析维度：
       - 病灶特征总结
       - 结合病史的对比分析
+      - RAG知识增强鉴别诊断
       - 风险等级评估
-      - 鉴别诊断
       - 进一步检查建议
     """
     user_msg = _get_user_message(state)
     detection_result = state.get("detection_result", {})
+    knowledge_context = ""
 
     # ── 构建诊断上下文 ──
     if not detection_result or detection_result.get("total_objects", -1) < 0:
@@ -243,6 +322,26 @@ async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
     # 患者病史上下文
     patient_context = _get_patient_context(state)
 
+    # ── RAG 知识增强 ──
+    try:
+        from app.rag.retriever import knowledge_retriever
+
+        # 根据检出的病灶类型检索相关知识
+        class_counts = detection_result.get("class_counts", {})
+        lesion_types = list(class_counts.keys())
+        if lesion_types:
+            # 检索最突出的病灶相关知识
+            primary_lesion = max(class_counts, key=class_counts.get)
+            rag_query = f"{primary_lesion} 胸部X光 诊断 鉴别诊断 临床建议"
+            rag_results = knowledge_retriever.search(rag_query, top_k=3)
+            if rag_results:
+                knowledge_context = "\n\n---\n\n".join(
+                    f"[知识库: {r.get('metadata', {}).get('source', '未知')}]\n{r.get('content', '')[:300]}"
+                    for r in rag_results if r.get("similarity", 0) >= 0.4
+                )
+    except Exception as e:
+        logger.warning("诊断节点 RAG 检索失败: %s", str(e))
+
     # 检测结果摘要
     total = detection_result.get("total_objects", 0)
     class_counts = detection_result.get("class_counts", {})
@@ -250,10 +349,14 @@ async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
         f"- {name}: {count}处" for name, count in sorted(class_counts.items())
     ) if class_counts else "无病灶检出"
 
-    # ── 构建 Prompt ──
+    # ── 构建 Prompt（注入RAG知识）──
+    detection_context = f"检出病灶总数: {total}\n病灶分布:\n{lesion_summary}"
+    if knowledge_context:
+        detection_context += f"\n\n## 相关医学知识（来自知识库）\n{knowledge_context}"
+
     diagnosis_prompt = CHESTX_DIAGNOSIS_PROMPT.format(
         patient_context=patient_context or "无历史记录",
-        detection_summary=f"检出病灶总数: {total}\n病灶分布:\n{lesion_summary}",
+        detection_summary=detection_context,
         user_question=user_msg,
     )
 

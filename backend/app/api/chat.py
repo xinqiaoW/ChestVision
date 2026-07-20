@@ -505,91 +505,29 @@ async def multi_agent_chat(
     except Exception as e:
         logger.warning("保存用户消息失败: %s", str(e))
 
-    # ── 注入患者病史上下文 ──
-    enhanced_message = message
-    try:
-        from app.database.session import SessionLocal
-        from app.entity.db_models import (
-            DetectionTask,
-            DoctorPatientRelation,
-            MedicalRecord,
-            PatientProfile,
-        )
-
-        db = SessionLocal()
+    # ── 注：Multi-Agent 架构下，患者病史由各节点通过 _get_patient_context() 独立加载
+    # 不再注入到消息中，避免病史中的关键词（如"诊断"）干扰 Supervisor 的路由判断
+    
+    # ── 确保 patient_profile_id 正确（自动匹配患者身份）──
+    resolved_patient_id = patient_profile_id
+    if not resolved_patient_id and current_user.user_type == "patient":
         try:
-            profile = None
-            if patient_profile_id and current_user.user_type != "patient":
-                profile = (
-                    db.query(PatientProfile)
-                    .filter(PatientProfile.id == patient_profile_id)
-                    .first()
-                )
-                if profile and current_user.user_type == "doctor":
-                    rel = (
-                        db.query(DoctorPatientRelation)
-                        .filter(
-                            DoctorPatientRelation.doctor_id == current_user.id,
-                            DoctorPatientRelation.patient_id == profile.user_id,
-                            DoctorPatientRelation.relation_status == "active",
-                        )
-                        .first()
-                    )
-                    if not rel:
-                        profile = None
-            elif current_user.user_type == "patient":
-                profile = (
-                    db.query(PatientProfile)
-                    .filter(PatientProfile.user_id == current_user.id)
-                    .first()
-                )
-
-            if profile:
-                records = (
-                    db.query(MedicalRecord)
-                    .filter(MedicalRecord.patient_profile_id == profile.id)
-                    .order_by(MedicalRecord.visit_date.desc().nullslast())
-                    .limit(5)
-                    .all()
-                )
-                tasks = (
-                    db.query(DetectionTask)
-                    .filter(
-                        DetectionTask.patient_profile_id == profile.id,
-                        DetectionTask.status == "completed",
-                    )
-                    .order_by(DetectionTask.created_at.desc())
-                    .limit(5)
-                    .all()
-                )
-
-                if records or tasks:
-                    ctx_parts = [
-                        f"[系统上下文：以下是患者 {profile.patient_code} 的历史信息]\n"
-                    ]
-                    if records:
-                        ctx_parts.append("## 历史病例")
-                        for r in records:
-                            ctx_parts.append(
-                                f"- {r.record_type} ({r.visit_date}): "
-                                f"主诉={r.chief_complaint or '无'}, "
-                                f"诊断={r.diagnosis or '无'}"
-                            )
-                    if tasks:
-                        ctx_parts.append("\n## 历史检测结果")
-                        for t in tasks:
-                            ctx_parts.append(
-                                f"- 检测ID={t.id} ({t.created_at}): "
-                                f"检出{t.total_objects}个病灶, "
-                                f"风险={t.risk_level or '未评估'}"
-                            )
-                    enhanced_message = "\n".join(ctx_parts) + "\n\n" + message
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning("注入病史上下文失败: %s", str(e))
+            from app.database.session import SessionLocal
+            from app.entity.db_models import PatientProfile
+            db = SessionLocal()
+            try:
+                profile = db.query(PatientProfile).filter(
+                    PatientProfile.user_id == current_user.id
+                ).first()
+                if profile:
+                    resolved_patient_id = profile.id
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("自动匹配患者身份失败: %s", str(e))
 
     # ── 如果有图片路径注入到消息中 ──
+    enhanced_message = message
     if image_path:
         enhanced_message = f"{enhanced_message}\n[附件图片路径: {image_path}]"
 
@@ -645,7 +583,7 @@ async def multi_agent_chat(
                 "has_knowledge": False,
                 "user_id": current_user.id,
                 "session_id": str(db_session_id),
-                "patient_profile_id": patient_profile_id,
+                "patient_profile_id": resolved_patient_id,
                 "image_path": image_path,
                 "task_id": None,
                 "error": None,

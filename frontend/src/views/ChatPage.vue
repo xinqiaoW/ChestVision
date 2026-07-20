@@ -89,6 +89,31 @@
               </div>
             </div>
 
+            <!-- Multi-Agent 节点流程可视化 -->
+            <div
+              v-if="msg.agentNodes && msg.agentNodes.length"
+              class="agent-nodes-area"
+            >
+              <div class="agent-flow-label">🤖 Multi-Agent 协作流程</div>
+              <div class="agent-flow">
+                <div
+                  v-for="(an, idx) in msg.agentNodes"
+                  :key="idx"
+                  class="agent-node-badge"
+                  :class="an.status"
+                >
+                  <span class="agent-node-icon">{{
+                    an.node === "supervisor" ? "🧠" :
+                    an.node === "detection" ? "🔬" :
+                    an.node === "diagnosis" ? "📋" :
+                    an.node === "report" ? "📄" :
+                    an.node === "qa" ? "📚" : "📝"
+                  }}</span>
+                  <span class="agent-node-label">{{ an.label }}</span>
+                </div>
+              </div>
+            </div>
+
             <!-- 工具调用可视化 -->
             <div
               v-if="msg.toolCalls && msg.toolCalls.length"
@@ -209,13 +234,12 @@
 </template>
 
 <script setup>
-import { detectBatch, detectSingle, detectZip } from "@/api/detection";
+import { getMultiAgentParams, uploadImageApi } from "@/api/chat";
 import { getPatients } from "@/api/patient";
 import { useAgentStore } from "@/stores/agent";
 import { useUserStore } from "@/stores/user";
-import request from "@/utils/request";
 import { streamChat } from "@/utils/stream";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage } from "element-plus";
 import MarkdownIt from "markdown-it";
 import { nextTick, onMounted, ref } from "vue";
 
@@ -287,12 +311,13 @@ async function sendMsg() {
   inputText.value = "";
   selectedFiles.value = [];
 
-  // ── "生成报告" 直接调 API ──
+  // ── "生成报告" 快捷操作（保留直接调用）──
   if (text.includes("生成报告") && !files.length) {
     agentStore.addMessage({ role: "assistant", content: "", loading: true });
     scrollBottom();
     try {
-      const res = await request.post("/reports/generate", { task_id: 0 });
+      const request = await import("@/utils/request");
+      const res = await request.default.post("/reports/generate", { task_id: 0 });
       const aiMsg = agentStore.messages[agentStore.messages.length - 1];
       aiMsg.content = res.content;
       aiMsg.downloadPdfUrl = `/api/reports/${res.id}/pdf`;
@@ -307,206 +332,104 @@ async function sendMsg() {
   }
 
   // AI 加载占位
-  agentStore.addMessage({ role: "assistant", content: "", loading: true });
+  agentStore.addMessage({ role: "assistant", content: "", loading: true, agentNodes: [] });
   scrollBottom();
 
-  // ── 有图片：直接走检测 API（入库 + AI 分析）──
+  // ── 有图片：先上传，再走 Multi-Agent ──
+  let imagePath = null;
   if (files.length > 0) {
     const last = agentStore.messages[agentStore.messages.length - 1];
-    last.content = "🔍 正在检测病灶...";
-
-    const detectionResults = [];
-    for (const f of files) {
-      try {
-        const fd = new FormData();
-        fd.append("file", f);
-        const detectRes = await request.post("/detection/detect", fd, {
-          headers: { "Content-Type": "multipart/form-data" },
-          timeout: 120000,
-        });
-        detectionResults.push(detectRes);
-      } catch (e) {
-        last.content = `${f.name} 检测失败：${e.response?.data?.detail || e.message}`;
-        last.loading = false;
-        return;
-      }
+    last.content = "📤 正在上传胸片...";
+    try {
+      const uploadRes = await uploadImageApi(files[0]);
+      imagePath = uploadRes.image_path;
+      last.content = "🔍 Multi-Agent 协作分析中...";
+    } catch (e) {
+      last.content = `上传失败：${e.response?.data?.detail || e.message}`;
+      last.loading = false;
+      scrollBottom();
+      return;
     }
-
-    last.loading = false;
-
-    if (detectionResults.length === 1) {
-      const r = detectionResults[0];
-      const classCounts = {};
-      r.objects.forEach((o) => {
-        classCounts[o.class_name_cn] = (classCounts[o.class_name_cn] || 0) + 1;
-      });
-      last.detectionResult = {
-        total_objects: r.total_objects,
-        inference_time: r.inference_time_ms,
-        class_counts: classCounts,
-        detections: r.objects,
-        annotated_image_base64: r.annotated_image_base64 || "",
-      };
-      last.content =
-        r.total_objects > 0
-          ? `检测完成，发现 ${r.total_objects} 个病灶：${r.objects.map((o) => o.class_name_cn).join("、")}`
-          : "检测完成，未发现明显病灶。";
-      if (r.ai_analysis?.report) {
-        last.content += `\n\n### AI 综合分析\n${r.ai_analysis.report}`;
-      }
-    } else {
-      const totalObjects = detectionResults.reduce(
-        (s, r) => s + r.total_objects,
-        0,
-      );
-      last.content = `批量检测完成，共 ${detectionResults.length} 张，发现 ${totalObjects} 个病灶。`;
-      last.detectionResult = {
-        total_objects: totalObjects,
-        class_counts: {},
-        detections: detectionResults.flatMap((r) => r.objects),
-        annotated_image_base64: "",
-        inference_time: detectionResults.reduce(
-          (s, r) => s + r.inference_time_ms,
-          0,
-        ),
-      };
-    }
-    scrollBottom();
-    return;
   }
 
-  // ── 纯文本：走 Agent SSE 对话 ──
+  // ── 调用 Multi-Agent SSE ──
+  const { url, body } = getMultiAgentParams({
+    message: text || "请分析这张胸片",
+    image_path: imagePath,
+    session_id: agentStore.currentSessionId || undefined,
+    patient_profile_id: selectedPatientId.value || undefined,
+  });
+
   let fullContent = "";
-  const stop = streamChat(
-    "/api/chat/stream",
-    {
-      message: text,
-      patient_profile_id: selectedPatientId.value || undefined,
-      session_id: agentStore.currentSessionId || undefined, // 传递会话 ID 实现多轮
-    },
-    {
-      onMessage: (data) => {
-        console.log(
-          "[SSE]",
-          data.type,
-          data.tool ? `tool=${data.tool}` : "",
-          data.knowledge_sources ? "有知识来源" : "",
-        );
-        const last = agentStore.messages[agentStore.messages.length - 1];
-        if (data.type === "text_chunk") {
-          fullContent += data.content;
-          agentStore.updateLastAssistantMessage(fullContent);
-          // Day11: 处理知识来源（从 text_chunk 中携带）
-          if (data.knowledge_sources) {
-            last.knowledgeSources = data.knowledge_sources;
-          }
-          if (data.has_knowledge !== undefined) {
-            last.hasKnowledge = data.has_knowledge;
-          }
-          scrollBottom();
-        } else if (data.type === "thinking") {
-          // Day11: Agent 正在思考，更新加载文案
-          if (last.loading && !last.content) {
-            last.content = data.content || "正在分析...";
-          }
-        } else if (data.type === "tool_start") {
-          // Day11: 工具开始调用
-          if (!last.toolCalls) last.toolCalls = [];
-          last.toolCalls.push({
-            tool: data.tool,
-            status: "loading",
-            summary: "",
-          });
-          scrollBottom();
-        } else if (data.type === "tool_end") {
-          // Day11: 工具调用完成
-          if (!last.toolCalls) last.toolCalls = [];
-          const tc = last.toolCalls.find(
-            (t) => t.tool === data.tool && t.status === "loading",
-          );
-          if (tc) {
-            tc.status = "done";
-            tc.summary = data.summary?.slice(0, 80) || "完成";
-          } else {
-            last.toolCalls.push({
-              tool: data.tool,
-              status: "done",
-              summary: data.summary?.slice(0, 80) || "完成",
-            });
-          }
-          // 处理检测结果卡片
-          if (data.result) {
-            try {
-              const result =
-                typeof data.result === "string"
-                  ? JSON.parse(data.result)
-                  : data.result;
-              if (
-                result.total_objects !== undefined ||
-                result.annotated_image_base64
-              ) {
-                last.detectionResult = result;
-              }
-              // 处理知识库检索结果
-              if (data.tool === "search_knowledge" && result.knowledge) {
-                last.knowledgeSources = result.knowledge.map((k) => ({
-                  source: k.source,
-                  title: k.content?.match(/#\s+(.+)/)?.[1] || k.source,
-                  similarity: k.similarity,
-                }));
-              }
-            } catch (e) {
-              /* ignore parse error */
-            }
-          }
-          scrollBottom();
-        } else if (data.type === "detection_card") {
-          // Day11: 检测结果卡片数据
-          last.detectionResult = data.data;
-          last.loading = false;
-        } else if (data.type === "done") {
-          // 流结束，记录后端返回的 session_id
-          if (data.session_id) {
-            agentStore.setCurrentSessionId(data.session_id);
-            agentStore.loadSessions();
-          }
-        } else if (data.type === "error") {
-          last.content = data.content;
-          last.loading = false;
+  const stop = streamChat(url, body, {
+    onMessage: (data) => {
+      const last = agentStore.messages[agentStore.messages.length - 1];
+      if (!last) return;
+
+      // ── Multi-Agent 节点事件 ──
+      if (data.type === "agent_node") {
+        if (!last.agentNodes) last.agentNodes = [];
+        const nodeLabels = {
+          supervisor: "🧠 任务调度",
+          detection: "🔬 病灶检测",
+          diagnosis: "📋 综合诊断",
+          report: "📄 报告生成",
+          qa: "📚 知识问答",
+          summarize: "📝 汇总输出",
+        };
+        last.agentNodes.push({
+          node: data.node,
+          label: nodeLabels[data.node] || data.node,
+          status: data.status || "completed",
+        });
+        scrollBottom();
+      }
+      // ── 思考状态 ──
+      else if (data.type === "thinking") {
+        if (last.loading && (!last.content || last.content.includes("分析"))) {
+          last.content = data.content || "正在分析...";
         }
-        // 兼容旧版事件类型
-        else if (data.type === "tool_call") {
-          last.toolCall = { tool: data.tool, input: data.input };
-        } else if (data.type === "tool_result") {
-          if (!last.toolCalls) last.toolCalls = [];
-          last.toolCalls.push({
-            tool: data.tool,
-            status: "done",
-            summary: data.result?.slice(0, 80) || "完成",
-          });
-          try {
-            const r = JSON.parse(data.result);
-            if (r.total_objects !== undefined || r.annotated_image_base64) {
-              last.detectionResult = r;
-            }
-          } catch (e) {
-            /* ignore */
-          }
+      }
+      // ── 文本块 ──
+      else if (data.type === "text_chunk") {
+        fullContent += data.content;
+        agentStore.updateLastAssistantMessage(fullContent);
+        if (data.knowledge_sources) {
+          last.knowledgeSources = data.knowledge_sources;
         }
-      },
-      onDone: () => {
-        const last = agentStore.messages[agentStore.messages.length - 1];
-        if (last.loading) last.loading = false;
-        agentStore.setLoading(false);
-      },
-      onError: (err) => {
-        const last = agentStore.messages[agentStore.messages.length - 1];
-        last.content = `出错：${err.message}`;
+        if (data.has_knowledge !== undefined) {
+          last.hasKnowledge = data.has_knowledge;
+        }
         last.loading = false;
-        agentStore.setLoading(false);
-      },
+        scrollBottom();
+      }
+      // ── 完成 ──
+      else if (data.type === "done") {
+        if (data.session_id) {
+          agentStore.setCurrentSessionId(data.session_id);
+          agentStore.loadSessions();
+        }
+      }
+      // ── 错误 ──
+      else if (data.type === "error") {
+        last.content = data.content;
+        last.loading = false;
+      }
     },
-  );
+    onDone: () => {
+      const last = agentStore.messages[agentStore.messages.length - 1];
+      if (last && last.loading) last.loading = false;
+      agentStore.setLoading(false);
+    },
+    onError: (err) => {
+      const last = agentStore.messages[agentStore.messages.length - 1];
+      if (last) {
+        last.content = `处理出错：${err.message}`;
+        last.loading = false;
+      }
+      agentStore.setLoading(false);
+    },
+  });
   agentStore.abortController = stop;
 }
 
@@ -549,7 +472,7 @@ function stopChat() {
   }
 }
 
-// 快捷检测 — 直接调快捷 API（不入库、不 AI 分析）
+// 快捷检测 → 上传后走 Multi-Agent 协作流程
 async function quickDetect(type) {
   const input = document.createElement("input");
   input.type = "file";
@@ -559,47 +482,12 @@ async function quickDetect(type) {
     const files = Array.from(e.target.files);
     if (!files.length) return;
 
-    const isZip = files.some((f) => f.name.endsWith(".zip"));
-
-    agentStore.addMessage({
-      role: "user",
-      content: isZip
-        ? `[ZIP检测] ${files[0].name}`
-        : `[快捷检测] ${files.length} 张胸片`,
-      images: files.map((f) => URL.createObjectURL(f)),
-    });
-    agentStore.addMessage({
-      role: "assistant",
-      content: "🔍 检测中...",
-      loading: true,
-    });
-    scrollBottom();
-
-    try {
-      const fd = new FormData();
-      if (isZip) fd.append("file", files[0]);
-      else if (files.length === 1) fd.append("file", files[0]);
-      else files.forEach((f) => fd.append("files", f));
-
-      const api = isZip
-        ? detectZip
-        : files.length === 1
-          ? detectSingle
-          : detectBatch;
-      const result = await api(fd);
-      const last = agentStore.messages[agentStore.messages.length - 1];
-      last.content =
-        result.total_objects > 0
-          ? `检测完成！发现 ${result.total_objects} 个病灶`
-          : "检测完成，未发现明显病灶";
-      last.loading = false;
-      last.detectionResult = result;
-    } catch (err) {
-      const last = agentStore.messages[agentStore.messages.length - 1];
-      last.content = `检测失败：${err.message}`;
-      last.loading = false;
-    }
+    selectedFiles.value = files;
+    inputText.value = "请分析这张胸片";
+    await sendMsg();
   };
+  input.click();
+
   input.click();
 }
 
@@ -1011,5 +899,64 @@ async function handleDeleteSession(sessionId) {
     flex-shrink: 0;
     font-size: 16px;
   }
+}
+
+/* ── Multi-Agent 流程可视化 ── */
+.agent-nodes-area {
+  margin-top: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, #f0f4ff, #f8fafd);
+  border-radius: 10px;
+  border: 1px solid #e0e8f5;
+}
+
+.agent-flow-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #5b6e8c;
+  margin-bottom: 8px;
+}
+
+.agent-flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-node-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #e8eef8;
+  color: #4a5f80;
+  transition: all 0.3s;
+  &.completed {
+    background: #e6f7f5;
+    color: #2a9d8f;
+    border: 1px solid #c3e8e1;
+  }
+  &.loading {
+    background: #fff7e6;
+    color: #d48806;
+    border: 1px solid #ffe58f;
+    animation: nodePulse 1.5s ease-in-out infinite;
+  }
+}
+
+.agent-node-icon {
+  font-size: 14px;
+}
+
+.agent-node-label {
+  white-space: nowrap;
+}
+
+@keyframes nodePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 </style>

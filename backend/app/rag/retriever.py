@@ -32,9 +32,11 @@ class KnowledgeRetriever:
 
     def build_index(self, force_rebuild: bool = False):
         """构建知识库索引：加载文档 → 文本分块 → 向量化 → 存储"""
-        if self._index_built and not force_rebuild:
+        # 检查是否已有索引数据（无论 _index_built 状态，避免重启后重复构建）
+        if not force_rebuild:
             count = pgvector_client.count()
             if count > 0:
+                self._index_built = True
                 logger.info("知识库索引已存在 (%d条)，跳过构建", count)
                 return
 
