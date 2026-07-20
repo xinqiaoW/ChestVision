@@ -1,5 +1,7 @@
 ﻿<template>
   <div class="login-page">
+    <!-- 左上角 logo -->
+    <img src="@/assets/xjtulogo.png" alt="logo" class="corner-logo" />
     <div class="bg-glow bg-glow-top"></div>
     <div class="bg-glow bg-glow-bottom"></div>
     <div class="page-top-info">
@@ -359,43 +361,48 @@ async function handleRegister() {
 
 <style scoped>
 .login-page {
-  --accent: #56d4c1;
-  --accent-d: #3ab8a5;
-  --card-bg: #181c26;
-  --input-bg: #1e2230;
-  --text-main: #e0e3ea;
-  --text-sub: #6b7084;
-  --border: rgba(255, 255, 255, 0.06);
+  --accent: #2a9d8f;
+  --accent-d: #1b7a6e;
+  --card-bg: rgba(255, 255, 255, 0.92);
+  --input-bg: #f5f6f8;
+  --text-main: #1a1a2e;
+  --text-sub: #6b7280;
+  --border: rgba(0, 0, 0, 0.08);
   position: fixed;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0f1219;
+  background:
+    url("@/assets/xjtubk.png") center / cover no-repeat,
+    #0f1219;
   z-index: 1000;
   overflow: hidden;
 }
 
-.bg-glow {
+/* 背景暗色遮罩，让文字更清晰 */
+.login-page::before {
+  content: "";
   position: absolute;
-  border-radius: 50%;
-  filter: blur(120px);
-  opacity: 0.15;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 0;
   pointer-events: none;
 }
-.bg-glow-top {
-  width: 600px;
-  height: 600px;
-  top: -200px;
-  left: -100px;
-  background: radial-gradient(circle, #56d4c1, transparent);
+
+/* 左上角 logo */
+.corner-logo {
+  position: absolute;
+  top: 24px;
+  left: 28px;
+  height: 160px;
+  width: auto;
+  z-index: 3;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5)) brightness(2);
 }
-.bg-glow-bottom {
-  width: 500px;
-  height: 500px;
-  bottom: -180px;
-  right: -120px;
-  background: radial-gradient(circle, #6a5acd, transparent);
+
+.bg-glow {
+  display: none;
 }
 
 .page-top-info {
@@ -413,14 +420,17 @@ async function handleRegister() {
 .top-title {
   font-size: 26px;
   font-weight: 800;
-  color: #e8eaf0;
+  color: #fff;
   margin: 0 0 6px;
   letter-spacing: 0.5px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 .top-desc {
   font-size: 13px;
-  color: #5c6175;
+  color: rgba(255, 255, 255, 0.85);
   margin: 0;
+  font-weight: 600;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
 .page-bottom-info {
@@ -436,8 +446,10 @@ async function handleRegister() {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-  color: #5c6175;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 600;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 .bottom-icon {
   font-size: 16px;
@@ -449,9 +461,11 @@ async function handleRegister() {
   max-width: 96vw;
   min-height: 560px;
   background: var(--card-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--border);
   border-radius: 24px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.15);
   overflow: hidden;
   z-index: 2;
 }
@@ -462,7 +476,7 @@ async function handleRegister() {
   left: 0;
   width: 100%;
   height: 72px;
-  background: rgba(24, 28, 38, 0.85);
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   z-index: 15;
@@ -609,32 +623,32 @@ async function handleRegister() {
 
 :deep(.el-input__wrapper) {
   background: var(--input-bg) !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid #e0e3e8 !important;
   border-radius: 10px !important;
   box-shadow: none !important;
   transition: all 0.25s;
 }
 :deep(.el-input__wrapper:hover) {
-  border-color: rgba(255, 255, 255, 0.14) !important;
+  border-color: #c0c5ce !important;
 }
 .login-area :deep(.el-input__wrapper.is-focus) {
   border-color: var(--accent) !important;
-  box-shadow: 0 0 0 3px rgba(86, 212, 193, 0.1) !important;
+  box-shadow: 0 0 0 3px rgba(42, 157, 143, 0.12) !important;
 }
 .register-area :deep(.el-input__wrapper.is-focus) {
-  border-color: #7b5fe0 !important;
-  box-shadow: 0 0 0 3px rgba(123, 95, 224, 0.1) !important;
+  border-color: #4a7fd9 !important;
+  box-shadow: 0 0 0 3px rgba(74, 127, 217, 0.12) !important;
 }
 :deep(.el-input__inner) {
-  color: #c8cdd8;
+  color: #2c3e50;
   font-size: 14px;
 }
 :deep(.el-input__inner::placeholder) {
-  color: #4a4f60;
+  color: #a0a8b4;
 }
 :deep(.el-input__prefix),
 :deep(.el-input__suffix) {
-  color: #4a4f60;
+  color: #a0a8b4;
 }
 :deep(.el-form-item) {
   margin-bottom: 18px;
