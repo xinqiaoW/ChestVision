@@ -27,9 +27,120 @@ from app.agent.tools.detection_tool import (
     clear_last_result,
     get_last_result,
 )
+from app.config.settings import settings
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# ══════════════════════════════════════════════════════════════
+# 病灶英文→中文名称映射 & 临床紧急程度权重
+# ══════════════════════════════════════════════════════════════
+
+LESION_CN_MAP: dict[str, str] = {
+    "Atelectasis": "肺不张",
+    "Calcification": "钙化",
+    "Consolidation": "实变",
+    "Effusion": "胸腔积液",
+    "Emphysema": "肺气肿",
+    "Fibrosis": "纤维化",
+    "Fracture": "骨折",
+    "Mass": "肿块",
+    "Nodule": "结节",
+    "Pneumothorax": "气胸",
+}
+
+# 临床紧急程度权重（值越大越紧急）
+LESION_URGENCY: dict[str, int] = {
+    "Pneumothorax": 100,   # 气胸 — 最紧急
+    "Effusion": 90,        # 胸腔积液
+    "Mass": 80,            # 肿块 — 高恶性风险
+    "Fracture": 70,        # 骨折
+    "Nodule": 60,          # 结节
+    "Consolidation": 50,   # 实变
+    "Atelectasis": 40,     # 肺不张
+    "Fibrosis": 30,        # 纤维化
+    "Emphysema": 20,       # 肺气肿
+    "Calcification": 10,   # 钙化 — 通常良性
+}
+
+# 统一 RAG 相似度阈值
+RAG_THRESHOLD = settings.RAG_SIMILARITY_THRESHOLD
+
+
+def _pick_primary_lesion(class_counts: dict[str, int]) -> str | None:
+    """按临床紧急程度选择最关键的病灶类型进行 RAG 检索
+
+    优先选择紧急程度高且数量>0的病灶。同紧急程度时选数量多的。
+    """
+    if not class_counts:
+        return None
+    # 按 (紧急权重, 数量) 降序排列
+    sorted_lesions = sorted(
+        class_counts.items(),
+        key=lambda kv: (LESION_URGENCY.get(kv[0], 0), kv[1]),
+        reverse=True,
+    )
+    return sorted_lesions[0][0]
+
+
+def _load_detection_from_db(state: dict) -> dict | None:
+    """从数据库加载用户最近一次完成的检测结果（跨轮次兜底）
+
+    当 state 中没有 detection_result 但用户消息明显在引用历史检测时，
+    diagnosis_node 和 summarize_node 可调用此函数从 DB 恢复数据。
+    """
+    user_id = state.get("user_id", 0)
+    task_id = state.get("task_id")
+    if not user_id:
+        return None
+
+    try:
+        from app.database.session import SessionLocal
+        from app.entity.db_models import DetectionResult, DetectionTask
+
+        db = SessionLocal()
+        try:
+            query = db.query(DetectionTask).filter(
+                DetectionTask.user_id == user_id,
+                DetectionTask.status == "completed",
+            )
+            if task_id:
+                query = query.filter(DetectionTask.id == task_id)
+            last_task = query.order_by(DetectionTask.created_at.desc()).first()
+
+            if not last_task or not last_task.total_objects:
+                return None
+
+            details = (
+                db.query(DetectionResult)
+                .filter(DetectionResult.task_id == last_task.id)
+                .all()
+            )
+            class_counts: dict[str, int] = {}
+            detections_list: list[dict] = []
+            for r in details:
+                cls_name = r.class_name or "Unknown"
+                class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+                detections_list.append({
+                    "class_name": cls_name,
+                    "class_name_cn": r.class_name_cn or cls_name,
+                    "confidence": r.confidence or 0,
+                })
+
+            return {
+                "total_objects": last_task.total_objects,
+                "class_counts": class_counts,
+                "inference_time": last_task.total_inference_time or 0,
+                "status": "completed",
+                "task_id": last_task.id,
+                "detections": detections_list,
+                "risk_level": last_task.risk_level or "unknown",
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("从DB加载检测结果失败: %s", str(e))
+        return None
 
 # ══════════════════════════════════════════════════════════════
 # 辅助函数
@@ -310,14 +421,24 @@ async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
     knowledge_context = ""
 
     # ── 构建诊断上下文 ──
+    # ⭐ 关键修复：detection_result 为空时，尝试从 DB 加载历史检测结果
     if not detection_result or detection_result.get("total_objects", -1) < 0:
-        return {
-            "diagnosis_result": {
-                "findings": "尚未进行胸片检测，请先上传胸片进行病灶检测。",
-                "risk_level": "unknown",
-            },
-            "next_agent": "summarize",
-        }
+        db_detection = _load_detection_from_db(state)
+        if db_detection:
+            detection_result = db_detection
+            logger.info(
+                "诊断节点从DB加载历史检测: total=%d, classes=%s",
+                detection_result.get("total_objects", 0),
+                detection_result.get("class_counts", {}),
+            )
+        else:
+            return {
+                "diagnosis_result": {
+                    "findings": "尚未进行胸片检测，请先上传胸片进行病灶检测。",
+                    "risk_level": "unknown",
+                },
+                "next_agent": "summarize",
+            }
 
     # 患者病史上下文
     patient_context = _get_patient_context(state)
@@ -326,18 +447,20 @@ async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
     try:
         from app.rag.retriever import knowledge_retriever
 
-        # 根据检出的病灶类型检索相关知识
+        # 根据检出的病灶类型检索相关知识（使用中文名 + 临床紧急程度排序）
         class_counts = detection_result.get("class_counts", {})
-        lesion_types = list(class_counts.keys())
-        if lesion_types:
-            # 检索最突出的病灶相关知识
-            primary_lesion = max(class_counts, key=class_counts.get)
-            rag_query = f"{primary_lesion} 胸部X光 诊断 鉴别诊断 临床建议"
-            rag_results = knowledge_retriever.search(rag_query, top_k=3)
+        primary_lesion_en = _pick_primary_lesion(class_counts)
+        if primary_lesion_en:
+            # 使用中文病灶名构建 RAG 查询，提升中文知识库检索效果
+            primary_lesion_cn = LESION_CN_MAP.get(primary_lesion_en, primary_lesion_en)
+            rag_query = f"{primary_lesion_cn} 胸部X光 影像学特征 诊断 鉴别诊断 临床建议"
+            rag_results = knowledge_retriever.search_with_threshold(
+                rag_query, top_k=3, threshold=RAG_THRESHOLD,
+            )
             if rag_results:
                 knowledge_context = "\n\n---\n\n".join(
-                    f"[知识库: {r.get('metadata', {}).get('source', '未知')}]\n{r.get('content', '')[:300]}"
-                    for r in rag_results if r.get("similarity", 0) >= 0.4
+                    f"[知识库: {r.get('metadata', {}).get('source', '未知')}]\n{r.get('content', '')[:400]}"
+                    for r in rag_results
                 )
     except Exception as e:
         logger.warning("诊断节点 RAG 检索失败: %s", str(e))
@@ -376,13 +499,25 @@ async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
         logger.error("诊断节点 LLM 调用失败: %s", str(e))
         diagnosis_text = f"诊断分析暂时不可用（{str(e)}），请稍后重试。"
 
-    # ── 简单提取风险等级 ──
+    # ── 提取风险等级（更健壮的匹配逻辑）──
     risk_level = "medium"
-    for level in ["极高风险", "高风险", "中风险", "低风险"]:
-        if level in diagnosis_text:
-            risk_map = {"极高风险": "critical", "高风险": "high", "中风险": "medium", "低风险": "low"}
-            risk_level = risk_map.get(level, "medium")
+    risk_patterns = [
+        ("极高风险", "critical"), ("critical", "critical"),
+        ("高风险", "high"), ("high", "high"),
+        ("中风险", "medium"), ("medium", "medium"),
+        ("低风险", "low"), ("low", "low"),
+        ("无风险", "none"), ("none", "none"),
+    ]
+    diagnosis_lower = diagnosis_text.lower()
+    for pattern, level in risk_patterns:
+        if pattern in diagnosis_lower:
+            risk_level = level
             break
+
+    # ── 兜底：如果 LLM 未在文本中标注风险等级，根据检测结果推断 ──
+    if risk_level == "medium" and not any(p in diagnosis_text for p in ["中风险", "medium"]):
+        risk_level = _estimate_risk_level(detection_result)
+        logger.info("诊断节点未显式标注风险，根据检测结果推断为: %s", risk_level)
 
     logger.info("诊断节点完成: risk=%s, text_len=%d", risk_level, len(diagnosis_text))
 
@@ -485,19 +620,19 @@ async def qa_node(state: dict, llm: ChatOpenAI = None) -> dict:
     try:
         from app.rag.retriever import knowledge_retriever
 
-        results = knowledge_retriever.search(user_msg, top_k=3)
+        results = knowledge_retriever.search_with_threshold(
+            user_msg, top_k=3, threshold=RAG_THRESHOLD,
+        )
         if results:
-            max_sim = max(r.get("similarity", 0) for r in results)
-            if max_sim >= 0.5:
-                has_knowledge = True
-                knowledge_sources = [
-                    {
-                        "source": r.get("metadata", {}).get("source", "未知"),
-                        "content": r.get("content", "")[:200],
-                        "similarity": r.get("similarity", 0),
-                    }
-                    for r in results if r.get("similarity", 0) >= 0.5
-                ]
+            has_knowledge = True
+            knowledge_sources = [
+                {
+                    "source": r.get("metadata", {}).get("source", "未知"),
+                    "content": r.get("content", "")[:300],
+                    "similarity": r.get("similarity", 0),
+                }
+                for r in results
+            ]
     except Exception as e:
         logger.warning("RAG 检索失败: %s", str(e))
 

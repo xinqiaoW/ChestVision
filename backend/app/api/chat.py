@@ -3,24 +3,30 @@
 
 接口列表：
   - POST /api/chat/upload              上传图片/文件，返回服务端路径
-  - POST /api/chat/stream              SSE 流式对话（核心接口）
+  - POST /api/chat/stream              SSE 流式对话（核心接口 — 多 Agent 协作）
   - GET  /api/chat/sessions            获取当前用户的会话列表
   - GET  /api/chat/sessions/{id}/messages  获取指定会话的消息历史
   - DELETE /api/chat/sessions/{id}     删除指定会话
+
+架构说明（v2 — 多 Agent 协作）：
+  用户请求 → Supervisor 路由 → Detection/Diagnosis/Report/QA Agent
+                                → Summarize 汇总 → SSE 流式返回
 """
 
 import json
 import os
+import re
 import tempfile
 import time
-import uuid
 
-from app.agent.detection_agent import detection_agent
+from app.agent.graph import run_graph_stream
 from app.api.auth import get_current_user
 from app.core.logger import get_logger
 from app.services import chat_service
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage as LcAIMessage
+from langchain_core.messages import HumanMessage as LcHumanMessage
 
 logger = get_logger(__name__)
 
@@ -184,6 +190,7 @@ async def chat_stream(
     async def event_generator():
         full_response = ""  # 收集完整回复
         start_time = time.time()
+        detected_agent = "unknown"
 
         # ── ④ 加载对话历史（DB持久化层）──
         chat_history = []
@@ -192,31 +199,28 @@ async def chat_stream(
                 session_id=db_session_id,
                 user_id=current_user.id,
             )
-            # 清理历史消息中的文件路径标记，防止 LLM 泄露/hallucinate 临时路径
-            import re
+            # 清理历史消息中的文件路径标记
             for msg in raw_history:
                 clean_content = re.sub(
                     r'\[附件(图片|多张图片|视频|ZIP)路径:.*?\]', '', msg.content
                 ).strip()
                 if clean_content:
                     if msg.__class__.__name__ == "HumanMessage":
-                        from langchain_core.messages import HumanMessage
-                        chat_history.append(HumanMessage(content=clean_content))
+                        chat_history.append(LcHumanMessage(content=clean_content))
                     elif msg.__class__.__name__ == "AIMessage":
-                        from langchain_core.messages import AIMessage
-                        chat_history.append(AIMessage(content=clean_content))
-            logger.info("加载 %d 条历史消息（已清理路径）到 Agent 上下文", len(chat_history))
+                        chat_history.append(LcAIMessage(content=clean_content))
+            logger.info("加载 %d 条历史消息到多 Agent 上下文", len(chat_history))
         except Exception as e:
             logger.warning("加载对话历史失败: %s", str(e))
 
-        # ── ④+ 注入上下文（无新图片时从DB查最近检测结果直接告诉AI）──
+        # ── ④+ 注入上下文（无新图片时从DB查最近检测结果）──
         final_message = enhanced_message
+        prior_detection = None  # 用于注入到 state
         if not image_path and chat_history:
             has_prior_ai = any(
                 msg.__class__.__name__ == "AIMessage" for msg in chat_history
             )
             if has_prior_ai and len(chat_history) >= 2:
-                # 从 DB 查询用户最近一次完成的检测，获取真实数据
                 try:
                     from app.database.session import SessionLocal as SL2
                     from app.entity.db_models import DetectionResult, DetectionTask
@@ -232,12 +236,33 @@ async def chat_stream(
                             .first()
                         )
                         if last_task and last_task.total_objects:
-                            # 取病灶明细
                             details = (
                                 db2.query(DetectionResult)
                                 .filter(DetectionResult.task_id == last_task.id)
                                 .all()
                             )
+                            # 构建 class_counts（用于 diagnosis 和 summarize 节点）
+                            class_counts = {}
+                            detections_list = []
+                            for r in details:
+                                cls_name = r.class_name or "Unknown"
+                                class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+                                detections_list.append({
+                                    "class_name": cls_name,
+                                    "class_name_cn": r.class_name_cn or cls_name,
+                                    "confidence": r.confidence or 0,
+                                    "bbox": r.bbox_json if hasattr(r, 'bbox_json') else None,
+                                })
+                            # ⭐ 关键修复：把历史检测结果注入到 state 结构中
+                            prior_detection = {
+                                "total_objects": last_task.total_objects,
+                                "class_counts": class_counts,
+                                "inference_time": last_task.total_inference_time or 0,
+                                "status": "completed",
+                                "task_id": last_task.id,
+                                "detections": detections_list,
+                                "risk_level": last_task.risk_level or "unknown",
+                            }
                             lesion_list = "、".join(
                                 f"{r.class_name_cn or r.class_name}"
                                 f"({r.confidence:.0%})"
@@ -249,12 +274,8 @@ async def chat_stream(
                                 f"现在用户问：「{enhanced_message}」。"
                                 f"请基于以上真实检测数据回答，不要编造其他病灶类型。"
                             )
-                            logger.info(
-                                "注入检测数据: task=%d, lesions=%s",
-                                last_task.id, lesion_list,
-                            )
+                            logger.info("注入检测上下文: task=%d, lesions=%s", last_task.id, lesion_list)
                         else:
-                            # 无检测记录但有历史对话，通用提示
                             final_message = (
                                 f"「上下文」你与用户已有对话历史。"
                                 f"现在用户继续问：「{enhanced_message}」。"
@@ -265,49 +286,72 @@ async def chat_stream(
                 except Exception as e:
                     logger.warning("查询最近检测结果失败: %s", str(e))
 
-        # ── ⑤ Day11: 缓存用户消息到 Redis 记忆 ──
+        # ── ⑤ 构建多 Agent 图初始状态 ──
+        messages_for_graph = list(chat_history) if chat_history else []
+        messages_for_graph.append(LcHumanMessage(content=final_message))
+
+        # ⭐ 将历史检测结果注入 state，确保 diagnosis 节点能获取到
+        detection_result_for_state = prior_detection if prior_detection else {}
+        task_id_for_state = prior_detection.get("task_id") if prior_detection else None
+
+        initial_state = {
+            "messages": messages_for_graph,
+            "user_id": current_user.id,
+            "session_id": str(db_session_id),
+            "patient_profile_id": patient_profile_id,
+            "image_path": image_path,
+            "next_agent": "supervisor",
+            "detection_result": detection_result_for_state,
+            "diagnosis_result": {},
+            "report_result": "",
+            "qa_result": "",
+            "final_response": "",
+            "knowledge_sources": [],
+            "has_knowledge": False,
+            "task_id": task_id_for_state,
+            "error": None,
+        }
+
+        # ── ⑥ 缓存用户消息到 Redis（缓存层，DB 为主存储）──
         try:
             from app.agent.memory import conversation_memory
             conversation_memory.save_message(
-                current_user.id, str(db_session_id), "user", enhanced_message
+                current_user.id, str(db_session_id), "user", message  # 存原始消息
             )
         except Exception as e:
             logger.warning("Redis缓存用户消息失败: %s", str(e))
 
+        # ── ⑦ 执行多 Agent 图并流式返回 ──
         try:
-            from app.agent.detection_agent import DetectionAgent
+            async for event in run_graph_stream(initial_state):
+                event_type = event.get("type", "")
 
-            DetectionAgent._current_user = current_user
-            # Day11: 设置工具模块中的当前用户
-            from app.agent.tools.analysis_tool import set_current_user
-            set_current_user(current_user)
+                # 记录 Agent 路径
+                if event_type == "thinking":
+                    content = event.get("content", "")
+                    if "检测" in content:
+                        detected_agent = "detection"
+                    elif "诊断" in content:
+                        detected_agent = "diagnosis"
+                    elif "报告" in content:
+                        detected_agent = "report"
+                    elif "知识库" in content:
+                        detected_agent = "qa"
 
-            async for event in detection_agent.chat_stream(
-                message=final_message,
-                image_path=image_path,
-                chat_history=chat_history if chat_history else None,
-                user_id=current_user.id,
-                session_id=str(db_session_id),
-            ):
+                # 收集文本回复
+                if event_type == "text_chunk":
+                    full_response += event.get("content", "")
+
+                # 对 done 事件补充 session 信息
+                if event_type == "done":
+                    event["session_id"] = db_session_id
+                    event["session_uuid"] = session_uuid
+                    event["agent_used"] = detected_agent
+
                 event_data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"
 
-                # 收集 AI 文本回复
-                if event.get("type") == "text_chunk":
-                    full_response += event.get("content", "")
-
-            # 发送完成信号（附带 session 信息）
-            done_data = json.dumps(
-                {
-                    "type": "done",
-                    "session_id": db_session_id,
-                    "session_uuid": session_uuid,
-                },
-                ensure_ascii=False,
-            )
-            yield f"data: {done_data}\n\n"
-
-            # ── ③ 保存 AI 回复 ──
+            # ── ⑧ 保存 AI 回复到 DB（主存储）──
             latency_ms = int((time.time() - start_time) * 1000)
             if full_response.strip():
                 try:
@@ -315,13 +359,23 @@ async def chat_stream(
                         session_id=db_session_id,
                         role="assistant",
                         content=full_response.strip(),
+                        agent_used=detected_agent,
                         latency_ms=latency_ms,
                     )
                 except Exception as e:
                     logger.warning("保存 AI 回复失败: %s", str(e))
 
+                # Redis 缓存（与 DB 存储相同内容，保证一致性）
+                try:
+                    from app.agent.memory import conversation_memory
+                    conversation_memory.save_message(
+                        current_user.id, str(db_session_id), "ai", full_response.strip()
+                    )
+                except Exception as e:
+                    logger.warning("Redis缓存AI回复失败: %s", str(e))
+
         except Exception as e:
-            logger.error("SSE 异常: %s", str(e), exc_info=True)
+            logger.error("多 Agent 图执行异常: %s", str(e), exc_info=True)
             error_data = json.dumps(
                 {"type": "error", "content": str(e)}, ensure_ascii=False
             )

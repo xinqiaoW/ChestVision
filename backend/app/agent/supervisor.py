@@ -99,6 +99,30 @@ class SupervisorAgent:
         ]):
             return "detection"
 
+        # ══════════════════════════════════════════════════════
+        # 1.5 回顾性查询 → diagnosis（优先于 detection 判断）
+        #   用户明确在引用之前的检测结果，不应重新检测
+        # ══════════════════════════════════════════════════════
+        retrospective_keywords = [
+            "刚才", "刚刚", "我的结果", "检测结果", "我的检测",
+            "我的胸片", "我的报告", "上次", "之前的",
+            "据此", "基于此", "根据结果", "结合结果",
+            "对我", "生活建议", "注意事项", "从检测",
+            "从结果", "根据检测", "我的病情",
+            "患有什么", "得了什么", "什么病", "需要注意",
+        ]
+        if any(kw in message for kw in retrospective_keywords):
+            # 检测 state 中是否有结果；即便没有也走 diagnosis
+            # （diagnosis_node 有 DB 兜底逻辑）
+            detection_result = state.get("detection_result", {})
+            if detection_result and detection_result.get("total_objects", -1) >= 0:
+                return "diagnosis"
+            # 无 state 结果但消息明显在回顾 → 走 LLM 语义路由进一步判断
+            # 不放行到 detection，避免误判
+            if any(kw in message for kw in ["检测结果", "从检测", "从结果", "根据检测", "我的结果"]):
+                return "diagnosis"
+            # 其他回顾类关键词走 LLM 路由
+
         # 2. 检测相关关键词 → detection
         detection_keywords = [
             "检测", "识别", "看看这张", "分析这张", "帮我看看",
@@ -128,7 +152,7 @@ class SupervisorAgent:
             "需不需要", "治疗建议", "下一步",
         ]
         if any(kw in message for kw in diagnosis_keywords):
-            # 如果还没有检测结果，先路由到 detection
+            # 如果还没有检测结果，检查是否在回顾历史（由 1.5 处理）
             detection_result = state.get("detection_result", {})
             if not detection_result:
                 return "detection"

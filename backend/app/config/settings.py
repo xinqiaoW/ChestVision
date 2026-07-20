@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     RAG_CHUNK_SIZE: int = 500                     # 文档分块大小
     RAG_CHUNK_OVERLAP: int = 50                   # 分块重叠字符数
     RAG_TOP_K: int = 3                            # 检索返回 Top-K 条
+    RAG_SIMILARITY_THRESHOLD: float = 0.35        # 知识库检索相似度阈值（统一配置）
 
     @property
     def cors_origins_list(self) -> list:

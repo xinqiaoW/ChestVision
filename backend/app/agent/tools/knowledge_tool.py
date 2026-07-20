@@ -9,9 +9,13 @@ import json
 
 from langchain_core.tools import tool
 
+from app.config.settings import settings
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# 统一使用配置中的相似度阈值
+RAG_THRESHOLD = settings.RAG_SIMILARITY_THRESHOLD
 
 
 @tool
@@ -46,21 +50,21 @@ def search_knowledge(query: str, top_k: int = 3) -> str:
                 ensure_ascii=False,
             )
 
-        # 过滤低相似度结果
+        # 使用统一阈值过滤低相似度结果
         max_similarity = max(r.get("similarity", 0) for r in results)
-        if max_similarity < 0.5:
+        if max_similarity < RAG_THRESHOLD:
             return json.dumps(
-                {"answer": "知识库中暂无相关内容", "sources": []},
+                {"answer": "知识库中暂无高度相关内容，以下为近似匹配", "sources": []},
                 ensure_ascii=False,
             )
 
         formatted = []
         for r in results:
-            if r.get("similarity", 0) >= 0.5:
+            if r.get("similarity", 0) >= RAG_THRESHOLD:
                 formatted.append({
-                    "content": r["content"][:300],
+                    "content": r["content"][:500],
                     "source": r.get("metadata", {}).get("source", "未知"),
-                    "similarity": r.get("similarity", 0),
+                    "similarity": round(r.get("similarity", 0), 4),
                 })
 
         if not formatted:
