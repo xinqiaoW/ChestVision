@@ -29,6 +29,11 @@ fi
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   "$UV_BIN" venv "$VENV_DIR" --python python3
 fi
+if command -v nvidia-smi >/dev/null 2>&1; then
+  UV_LINK_MODE=copy "$UV_BIN" pip install --python "$VENV_DIR/bin/python" \
+    --index-url https://download.pytorch.org/whl/cu124 \
+    torch==2.5.1+cu124 torchvision==0.20.1+cu124
+fi
 UV_LINK_MODE=copy "$UV_BIN" pip install --python "$VENV_DIR/bin/python" \
   -r "$ROOT_DIR/backend/requirements.txt"
 
