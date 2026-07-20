@@ -2,7 +2,7 @@
   <aside class="app-sidebar" :class="{ collapsed }">
     <!-- Logo 区域 -->
     <div class="sidebar-logo" @click="$router.push('/')">
-      <span class="logo-icon">🫁</span>
+      <img src="@/assets/xjtulogo.png" alt="logo" class="sidebar-logo-img" />
       <Transition name="fade">
         <div v-show="!collapsed" class="logo-info">
           <span class="logo-text">ChestVision</span>
@@ -18,7 +18,7 @@
       :collapse="collapsed"
       background-color="transparent"
       text-color="#8b8fa3"
-      active-text-color="#56d4c1"
+      active-text-color="#2A9D8F"
     >
       <el-menu-item
         v-for="item in menuItems"
@@ -38,11 +38,11 @@
         /></el-icon>
       </div>
       <div class="sidebar-user" v-if="!collapsed">
-        <el-avatar :size="32">{{
+        <el-avatar :size="40">{{
           userStore.username?.charAt(0)?.toUpperCase()
         }}</el-avatar>
         <div class="user-info">
-          <span class="user-name">{{ userStore.username }}</span>
+          <span class="user-name">Dr. {{ userStore.username }}</span>
           <span class="user-role">{{ roleLabel }}</span>
         </div>
       </div>
@@ -152,6 +152,12 @@ const menuItems = computed(() =>
     line-height: 1;
   }
 
+  .sidebar-logo-img {
+    height: 36px;
+    width: auto;
+    flex-shrink: 0;
+  }
+
   .logo-info {
     display: flex;
     flex-direction: column;
@@ -258,29 +264,30 @@ const menuItems = computed(() =>
 .sidebar-user {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 2px;
+  gap: 12px;
+  padding: 6px 4px;
 
   .user-info {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 2px;
     overflow: hidden;
   }
 
   .user-name {
-    font-size: 13px;
-    color: #c8cdd8;
-    font-weight: 500;
+    font-size: 14px;
+    color: #e0e4ea;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .user-role {
-    font-size: 11px;
+    font-size: 12px;
     color: $sidebar-text;
     white-space: nowrap;
+    font-weight: 400;
   }
 }
 

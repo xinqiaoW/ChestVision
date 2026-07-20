@@ -1,208 +1,167 @@
-<template>
+﻿<template>
   <div class="chat-page">
-    <!-- 会话侧边栏切换按钮 -->
-    <div class="session-toggle" @click="showSessions = !showSessions">
-      <span>💬</span>
-    </div>
-
-    <!-- 会话侧边栏 -->
-    <div :class="['session-sidebar', { open: showSessions }]">
-      <div class="session-sidebar-header">
-        <h3>对话历史</h3>
-        <el-button size="small" type="primary" @click="startNewChat">
-          + 新对话
-        </el-button>
+    <!-- 左侧：会话列表 -->
+    <div :class="['chat-sessions-panel', { collapsed: !showSessions }]">
+      <div class="sessions-header">
+        <h3>对话记录</h3>
+        <el-button size="small" type="primary" @click="startNewChat"
+          >+ 新建对话</el-button
+        >
       </div>
-      <div class="session-list" v-loading="agentStore.sessionsLoading">
+      <div class="sessions-list" v-loading="agentStore.sessionsLoading">
         <div
           v-for="s in agentStore.sessions"
           :key="s.id"
           :class="[
-            'session-item',
+            'session-row',
             { active: s.id === agentStore.currentSessionId },
           ]"
           @click="switchToSession(s.id)"
         >
-          <div class="session-item-title">{{ s.title }}</div>
-          <div class="session-item-meta">
-            <span>{{ s.message_count }} 条消息</span>
-            <el-button
-              size="small"
-              text
-              type="danger"
-              @click.stop="handleDeleteSession(s.id)"
-            >
-              🗑
-            </el-button>
-          </div>
+          <div class="session-row-title">{{ s.title }}</div>
+          <div class="session-row-meta">{{ s.message_count }} 条消息</div>
         </div>
         <div
           v-if="!agentStore.sessions.length && !agentStore.sessionsLoading"
-          class="session-empty"
+          class="sessions-empty"
         >
-          暂无对话历史
+          暂无对话记录
         </div>
       </div>
     </div>
 
-    <!-- 消息列表 -->
-    <div class="message-list" ref="msgListRef">
+    <!-- 右侧：聊天区 -->
+    <div class="chat-main">
+      <!-- 折叠按钮 -->
       <div
-        v-for="(msg, i) in agentStore.messages"
-        :key="i"
-        :class="['message-row', `msg-${msg.role}`]"
+        class="session-toggle-btn"
+        @click="showSessions = !showSessions"
+        :title="showSessions ? '收起对话列表' : '展开对话列表'"
       >
-        <!-- AI 头像 -->
-        <div class="msg-avatar" v-if="msg.role === 'assistant'">
-          <span class="avatar-bot">🫁</span>
-        </div>
-
-        <div class="msg-body">
-          <!-- 发送者名称 + 时间 -->
-          <div class="msg-meta">
-            <span class="msg-sender">{{
-              msg.role === "user" ? "我" : "ChestVision AI"
-            }}</span>
+        <span>{{ showSessions ? "◀" : "▶" }}</span>
+      </div>
+      <!-- 消息列表 -->
+      <div class="chat-messages" ref="msgListRef">
+        <div
+          v-for="(msg, i) in agentStore.messages"
+          :key="i"
+          :class="['msg-row', `msg-${msg.role}`]"
+        >
+          <div class="msg-avatar" v-if="msg.role === 'assistant'">
+            <span class="avatar-bot">🫁</span>
           </div>
-
-          <!-- 消息气泡 -->
-          <div
-            :class="[
-              'message-bubble',
-              msg.role === 'user' ? 'user-bubble' : 'assistant-bubble',
-            ]"
-          >
-            <div v-if="msg.role === 'user'" class="message-content">
-              {{ msg.content }}
+          <div class="msg-body">
+            <div class="msg-meta">
+              <span class="msg-sender">{{
+                msg.role === "user" ? "我" : "ChestVision AI"
+              }}</span>
             </div>
-            <div v-if="msg.image" class="msg-attachment">
-              <img :src="msg.imagePreview" alt="附件" />
-            </div>
-
             <div
-              v-if="msg.role === 'assistant' && msg.loading"
-              class="typing-indicator"
+              :class="[
+                'msg-bubble',
+                msg.role === 'user' ? 'user-bubble' : 'assistant-bubble',
+              ]"
             >
-              <span></span><span></span><span></span>
-            </div>
-            <div
-              v-else-if="msg.role === 'assistant'"
-              class="message-content markdown-body"
-              v-html="renderMd(msg.content)"
-            ></div>
-            <div v-if="msg.downloadPdfUrl" class="msg-actions">
-              <a
-                href="#"
-                @click.prevent="downloadReport(msg.downloadPdfUrl)"
-                class="download-link"
+              <div v-if="msg.role === 'user'" class="msg-text">
+                {{ msg.content }}
+              </div>
+              <div v-if="msg.image" class="msg-attachment">
+                <img :src="msg.imagePreview" alt="附件" />
+              </div>
+              <div
+                v-if="msg.role === 'assistant' && msg.loading"
+                class="typing-indicator"
               >
-                📥 下载/打印报告
-              </a>
-            </div>
-            <DetectionResultCard
-              v-if="msg.detectionResult"
-              :result="msg.detectionResult"
-            />
-          </div>
-
-          <!-- 工具调用 -->
-          <div v-if="msg.toolCall" class="tool-call-info">
-            <el-tag size="small" type="info" effect="plain"
-              >🔧 {{ msg.toolCall.tool }}</el-tag
-            >
-          </div>
-          <!-- Day11: 工具调用可视化（含状态） -->
-          <div v-if="msg.toolCalls && msg.toolCalls.length > 0" class="tool-calls-area">
-            <div
-              v-for="(tc, idx) in msg.toolCalls"
-              :key="idx"
-              class="tool-call-row"
-              :class="{ loading: tc.status === 'loading' }"
-            >
-              <span v-if="tc.status === 'loading'" class="tool-spinner">⏳</span>
-              <span v-else class="tool-done">✅</span>
-              <span class="tool-label">{{ getToolLabel(tc.tool) }}</span>
-              <span class="tool-summary">{{ tc.summary || '...' }}</span>
+                <span></span><span></span><span></span>
+              </div>
+              <div
+                v-else-if="msg.role === 'assistant'"
+                class="msg-text markdown-body"
+                v-html="renderMd(msg.content)"
+              ></div>
+              <div v-if="msg.downloadPdfUrl" class="msg-actions">
+                <a
+                  href="#"
+                  @click.prevent="downloadReport(msg.downloadPdfUrl)"
+                  class="action-link"
+                  >📥 下载/打印报告</a
+                >
+              </div>
             </div>
           </div>
-          <!-- Day11: 知识来源显示 -->
-          <div v-if="msg.knowledgeSources && msg.knowledgeSources.length > 0" class="knowledge-sources-info">
-            <span class="kb-icon">📚</span>
-            <span class="kb-label">知识库检索结果：</span>
-            <span v-for="(src, idx) in msg.knowledgeSources" :key="idx" class="kb-source-tag">
-              {{ src.title || src.source }}
-            </span>
-          </div>
-          <div v-else-if="msg.hasKnowledge === false" class="knowledge-sources-info no-kb">
-            <span class="kb-icon">💡</span>
-            <span>回答来自大模型（知识库暂无相关内容）</span>
-          </div>
-        </div>
-
-        <!-- 用户头像 -->
-        <div class="msg-avatar" v-if="msg.role === 'user'">
-          <el-avatar :size="32">{{ userStore.username?.charAt(0) }}</el-avatar>
         </div>
       </div>
-    </div>
 
-    <!-- 快捷操作栏 -->
-    <div class="quick-actions">
-      <el-select
-        v-if="userStore.userType === 'doctor' || userStore.userType === 'admin'"
-        v-model="selectedPatientId"
-        placeholder="选择患者（可选）"
-        clearable
-        size="small"
-        style="width: 220px"
-        @change="onPatientChange"
-      >
-        <el-option
-          v-for="p in patientList"
-          :key="p.id"
-          :label="`${p.patient_code} ${p.real_name || p.username}`"
-          :value="p.id"
-        />
-      </el-select>
-      <el-button @click="quickDetect('single')" :disabled="agentStore.isLoading"
-        >📷 单图检测</el-button
-      >
-      <el-button @click="quickDetect('batch')" :disabled="agentStore.isLoading"
-        >📁 批量/ZIP</el-button
-      >
-    </div>
-
-    <!-- 输入区 -->
-    <div class="input-area">
-      <el-button
-        class="attach-btn"
-        @click="triggerFile"
-        :disabled="agentStore.isLoading"
-        circle
-        >📎</el-button
-      >
-      <input
-        ref="fileInputRef"
-        type="file"
-        accept="image/*,.zip"
-        multiple
-        style="display: none"
-        @change="onFileSelect"
-      />
-      <el-input
-        v-model="inputText"
-        placeholder="输入消息，或上传胸片进行AI分析..."
-        @keyup.enter="sendMsg"
-        :disabled="agentStore.isLoading"
-      />
-      <el-button
-        v-if="!agentStore.isLoading"
-        type="primary"
-        @click="sendMsg"
-        :disabled="!inputText.trim() && !selectedFiles.length"
-        >发送</el-button
-      >
-      <el-button v-else type="danger" @click="stopChat">停止</el-button>
+      <!-- 输入区 -->
+      <div class="chat-input-bar">
+        <!-- 快捷操作 -->
+        <div class="quick-actions">
+          <el-select
+            v-if="
+              userStore.userType === 'doctor' || userStore.userType === 'admin'
+            "
+            v-model="selectedPatientId"
+            placeholder="选择患者（可选）"
+            clearable
+            size="small"
+            style="width: 200px"
+            @change="onPatientChange"
+          >
+            <el-option
+              v-for="p in patientList"
+              :key="p.id"
+              :label="`${p.patient_code} ${p.real_name || p.username}`"
+              :value="p.id"
+            />
+          </el-select>
+          <el-button
+            size="small"
+            @click="quickDetect('single')"
+            :disabled="agentStore.isLoading"
+            >📷 单图检测</el-button
+          >
+          <el-button
+            size="small"
+            @click="quickDetect('batch')"
+            :disabled="agentStore.isLoading"
+            >📁 批量/ZIP</el-button
+          >
+        </div>
+        <!-- 输入框 -->
+        <div class="input-row">
+          <el-button
+            class="attach-btn"
+            @click="triggerFile"
+            :disabled="agentStore.isLoading"
+            circle
+            >📎</el-button
+          >
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept="image/*,.zip"
+            multiple
+            style="display: none"
+            @change="onFileSelect"
+          />
+          <el-input
+            v-model="inputText"
+            placeholder="输入消息，或上传胸片进行AI分析..."
+            size="large"
+            @keyup.enter.exact="sendMsg"
+            :disabled="agentStore.isLoading"
+          >
+            <template #append>
+              <el-button
+                @click="sendMsg"
+                :loading="agentStore.isLoading"
+                type="primary"
+                >发送</el-button
+              >
+            </template>
+          </el-input>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -229,7 +188,7 @@ const msgListRef = ref(null);
 const fileInputRef = ref(null);
 const selectedPatientId = ref(null);
 const patientList = ref([]);
-const showSessions = ref(false);
+const showSessions = ref(true);
 
 function scrollBottom() {
   nextTick(() => {
@@ -406,13 +365,17 @@ async function sendMsg() {
         } else if (data.type === "tool_start") {
           // Day11: 工具开始调用
           if (!last.toolCalls) last.toolCalls = [];
-          last.toolCalls.push({ tool: data.tool, status: "loading", summary: "" });
+          last.toolCalls.push({
+            tool: data.tool,
+            status: "loading",
+            summary: "",
+          });
           scrollBottom();
         } else if (data.type === "tool_end") {
           // Day11: 工具调用完成
           if (!last.toolCalls) last.toolCalls = [];
           const tc = last.toolCalls.find(
-            (t) => t.tool === data.tool && t.status === "loading"
+            (t) => t.tool === data.tool && t.status === "loading",
           );
           if (tc) {
             tc.status = "done";
@@ -427,10 +390,14 @@ async function sendMsg() {
           // 处理检测结果卡片
           if (data.result) {
             try {
-              const result = typeof data.result === "string"
-                ? JSON.parse(data.result)
-                : data.result;
-              if (result.total_objects !== undefined || result.annotated_image_base64) {
+              const result =
+                typeof data.result === "string"
+                  ? JSON.parse(data.result)
+                  : data.result;
+              if (
+                result.total_objects !== undefined ||
+                result.annotated_image_base64
+              ) {
                 last.detectionResult = result;
               }
               // 处理知识库检索结果
@@ -441,7 +408,9 @@ async function sendMsg() {
                   similarity: k.similarity,
                 }));
               }
-            } catch (e) { /* ignore parse error */ }
+            } catch (e) {
+              /* ignore parse error */
+            }
           }
           scrollBottom();
         } else if (data.type === "detection_card") {
@@ -473,7 +442,9 @@ async function sendMsg() {
             if (r.total_objects !== undefined || r.annotated_image_base64) {
               last.detectionResult = r;
             }
-          } catch (e) { /* ignore */ }
+          } catch (e) {
+            /* ignore */
+          }
         }
       },
       onDone: () => {
@@ -634,44 +605,160 @@ async function handleDeleteSession(sessionId) {
 </script>
 
 <style lang="scss" scoped>
-@use "sass:color";
+/* ═══════════════════════════════════════════════════════
+   三栏布局：会话列表 | 聊天区
+   ═══════════════════════════════════════════════════════ */
 .chat-page {
   display: flex;
-  flex-direction: column;
   height: 100%;
   background: $bg-color;
 }
-.message-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px 24px;
+
+/* ── 左侧会话列表 ── */
+.chat-sessions-panel {
+  width: 340px;
+  flex-shrink: 0;
+  background: #fff;
+  border-right: 1px solid #f0f2f5;
+  display: flex;
+  flex-direction: column;
+  transition:
+    width 0.3s ease,
+    opacity 0.3s ease;
+  overflow: hidden;
+  &.collapsed {
+    width: 0;
+    border-right: none;
+    opacity: 0;
+  }
 }
 
-.message-row {
+.sessions-header {
   display: flex;
-  gap: 12px;
-  margin-bottom: 24px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid #f0f2f5;
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: $text-primary;
+    margin: 0;
+  }
+}
+
+.sessions-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.session-row {
+  padding: 12px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 2px;
+  &:hover {
+    background: #f5f7fa;
+  }
+  &.active {
+    background: rgba(42, 157, 143, 0.08);
+  }
+}
+
+.session-row-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: $text-primary;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-row-meta {
+  font-size: 12px;
+  color: $text-secondary;
+}
+
+.sessions-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: $text-secondary;
+  font-size: 13px;
+}
+
+/* ── 右侧聊天主区 ── */
+.chat-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  position: relative;
+}
+
+.session-toggle-btn {
+  position: absolute;
+  top: 50%;
+  left: -14px;
+  transform: translateY(-50%);
+  z-index: 5;
+  width: 28px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border: 1px solid #e8ecf0;
+  border-radius: 0 8px 8px 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: $text-secondary;
+  transition: all 0.2s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  &:hover {
+    background: #f0faf7;
+    color: $primary-color;
+    border-color: $primary-color;
+  }
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 40px;
+}
+
+/* ── 消息气泡 ── */
+.msg-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
   animation: msgIn 0.3s ease;
   &.msg-user {
     flex-direction: row-reverse;
   }
 }
+
 .msg-avatar {
   flex-shrink: 0;
   .avatar-bot {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
-    font-size: 20px;
-    background: linear-gradient(135deg, #e6f7f5, #c8f0e8);
+    width: 34px;
+    height: 34px;
+    font-size: 18px;
+    background: linear-gradient(135deg, #e6f7f5, #d0f0e8);
     border-radius: 10px;
   }
 }
+
 .msg-body {
-  max-width: 72%;
+  max-width: 75%;
 }
+
 .msg-meta {
   margin-bottom: 4px;
   .msg-sender {
@@ -684,103 +771,100 @@ async function handleDeleteSession(sessionId) {
   text-align: right;
 }
 
-.message-bubble {
-  padding: 12px 16px;
-  border-radius: $border-radius-md;
-  line-height: 1.65;
-  font-size: 14px;
+.msg-bubble {
+  padding: 14px 20px;
+  border-radius: 14px;
+  line-height: 1.75;
+  font-size: 15px;
   word-break: break-word;
 }
 .user-bubble {
-  background: linear-gradient(135deg, $primary-color, $primary-light);
+  background: linear-gradient(135deg, $primary-dark, $primary-color);
   color: #fff;
-  border-bottom-right-radius: $spacing-xs;
-  box-shadow: 0 2px 8px rgba($primary-color, 0.2);
+  border-bottom-right-radius: 4px;
 }
 .assistant-bubble {
-  background: $bg-white;
-  border: 1px solid #e8ecf0;
-  border-bottom-left-radius: $spacing-xs;
-  box-shadow: $shadow-sm;
+  background: #fff;
+  color: $text-primary;
+  border: 1px solid #eef1f5;
+  border-bottom-left-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
-.message-content {
-  white-space: pre-wrap;
+
+.msg-text {
+  :deep(p) {
+    margin: 0 0 8px;
+    &:last-child {
+      margin: 0;
+    }
+  }
+  :deep(strong) {
+    color: $primary-dark;
+  }
+  :deep(code) {
+    background: #f5f6f8;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: $font-mono;
+  }
 }
+
 .msg-attachment {
   margin-top: 8px;
   img {
-    max-width: 220px;
-    border-radius: $border-radius-sm;
+    max-width: 240px;
+    border-radius: 10px;
+    border: 1px solid #eef1f5;
   }
 }
+
 .msg-actions {
   margin-top: 10px;
-}
-.download-link {
-  display: inline-block;
-  padding: 6px 14px;
-  background: #2a9d8f;
-  color: #fff;
-  border-radius: 6px;
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 500;
-  &:hover {
-    background: #238b7e;
+  display: flex;
+  gap: 12px;
+  .action-link {
+    font-size: 13px;
+    color: $primary-color;
+    text-decoration: none;
+    &:hover {
+      text-decoration: underline;
+    }
   }
 }
 
 .typing-indicator {
   display: flex;
-  gap: 5px;
-  padding: 6px 0;
+  gap: 4px;
+  padding: 4px 0;
   span {
-    width: 7px;
-    height: 7px;
-    background: #bfbfbf;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    animation: typing 1.2s infinite;
+    background: #c0c8d0;
+    animation: typing 1.4s infinite ease-in-out;
+    &:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+    &:nth-child(3) {
+      animation-delay: 0.4s;
+    }
   }
-  span:nth-child(2) {
-    animation-delay: 0.2s;
-  }
-  span:nth-child(3) {
-    animation-delay: 0.4s;
-  }
-}
-.quick-actions {
-  display: flex;
-  gap: 8px;
-  padding: 12px 24px;
-  border-top: 1px solid #eceff4;
-  background: $bg-white;
-}
-.input-area {
-  display: flex;
-  gap: 8px;
-  padding: 12px 24px;
-  border-top: 1px solid #eceff4;
-  background: $bg-white;
-  .el-input {
-    flex: 1;
-  }
-}
-.tool-call-info {
-  margin-top: 6px;
 }
 
 @keyframes typing {
   0%,
   60%,
   100% {
-    opacity: 0.3;
     transform: translateY(0);
+    opacity: 0.4;
   }
   30% {
+    transform: translateY(-6px);
     opacity: 1;
-    transform: translateY(-4px);
   }
 }
+
 @keyframes msgIn {
   from {
     opacity: 0;
@@ -792,170 +876,28 @@ async function handleDeleteSession(sessionId) {
   }
 }
 
-// ── 会话侧边栏 ──
-.session-toggle {
-  position: fixed;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 32px;
-  height: 60px;
-  background: $primary-color;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0 8px 8px 0;
-  cursor: pointer;
-  z-index: 100;
-  font-size: 16px;
-  transition: left 0.3s;
-  &:hover {
-    background: color.adjust($primary-color, $lightness: -8%);
-  }
-}
-.session-sidebar {
-  position: fixed;
-  left: -300px;
-  top: 0;
-  width: 280px;
-  height: 100%;
-  background: $bg-white;
-  border-right: 1px solid #eceff4;
-  z-index: 200;
-  transition: left 0.3s ease;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.08);
-  &.open {
-    left: 0;
-  }
-  .session-sidebar-header {
-    padding: 16px;
-    border-bottom: 1px solid #eceff4;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    h3 {
-      margin: 0;
-      font-size: 16px;
-      font-weight: 600;
-    }
-  }
-  .session-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px 0;
-  }
-  .session-item {
-    padding: 12px 16px;
-    cursor: pointer;
-    border-left: 3px solid transparent;
-    transition: all 0.2s;
-    &:hover {
-      background: #f5f7fa;
-    }
-    &.active {
-      background: #e8f4fd;
-      border-left-color: $primary-color;
-    }
-    .session-item-title {
-      font-size: 14px;
-      font-weight: 500;
-      color: $text-primary;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      margin-bottom: 4px;
-    }
-    .session-item-meta {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 12px;
-      color: $text-secondary;
-    }
-  }
-  .session-empty {
-    padding: 40px 16px;
-    text-align: center;
-    color: $text-secondary;
-    font-size: 13px;
-  }
+/* ── 输入区 ── */
+.chat-input-bar {
+  padding: 12px 40px 20px;
+  background: #fff;
+  border-top: 1px solid #f0f2f5;
 }
 
-// ── Day11: 工具调用可视化 ──
-.tool-calls-area {
-  margin-top: 8px;
-  padding: 8px 12px;
-  background: #f7f9fc;
-  border-radius: 8px;
-  font-size: 13px;
-}
-.tool-call-row {
+.quick-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 0;
-  color: #606266;
-  &.loading {
-    color: #909399;
-    .tool-label { color: #409eff; }
-  }
-}
-.tool-spinner {
-  animation: spin 1s linear infinite;
-  display: inline-block;
-}
-.tool-label {
-  font-weight: 500;
-  min-width: 70px;
-}
-.tool-summary {
-  color: #909399;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 200px;
-}
-
-// ── Day11: 知识来源显示 ──
-.knowledge-sources-info {
-  margin-top: 8px;
-  padding: 6px 10px;
-  background: #f0f9eb;
-  border-radius: 6px;
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  gap: 8px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
-  &.no-kb {
-    background: #fdf6ec;
-  }
-}
-.kb-icon {
-  font-size: 14px;
-}
-.kb-label {
-  color: #67c23a;
-  font-weight: 500;
-}
-.kb-source-tag {
-  display: inline-block;
-  padding: 2px 8px;
-  background: #e1f3d8;
-  color: #529b2e;
-  border-radius: 4px;
-  font-size: 11px;
-}
-.no-kb {
-  .kb-label { color: #e6a23c; }
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  .attach-btn {
+    flex-shrink: 0;
+    font-size: 16px;
+  }
 }
 </style>

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="page-container">
     <h2>👥 患者管理</h2>
 
@@ -178,13 +178,12 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .page-container {
-  padding: 20px;
-  h2 {
-    margin-bottom: 16px;
-    font-size: 20px;
-  }
+  padding: $spacing-xl;
 }
-.text-secondary {
-  color: #909399;
+h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0 0 $spacing-lg;
+  color: $text-primary;
 }
 </style>

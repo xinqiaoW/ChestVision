@@ -1,8 +1,10 @@
-<template>
+﻿<template>
   <div class="page-container">
-    <h2>📋 检测历史记录</h2>
+    <div class="page-header">
+      <h2>历史记录</h2>
+      <span class="page-subtitle">系统历史记录 — AI检测与模型执行审计日志</span>
+    </div>
 
-    <!-- 日期筛选 -->
     <div class="filter-bar">
       <el-date-picker
         v-model="dateRange"
@@ -16,70 +18,54 @@
       <el-button @click="clearFilter" v-if="dateRange">清除筛选</el-button>
     </div>
 
-    <el-card shadow="never">
-      <el-table
-        :data="taskList"
-        stripe
-        v-loading="loading"
-        @row-click="showDetail"
-        style="cursor: pointer"
+    <div class="timeline" v-loading="loading">
+      <div
+        v-for="task in taskList"
+        :key="task.id"
+        class="timeline-item"
+        @click="showDetail(task)"
       >
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="task_type" label="类型" width="80">
-          <template #default="{ row }">
-            <el-tag size="small">{{
-              row.task_type === "single" ? "单图" : row.task_type
-            }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="病灶统计" min-width="200">
-          <template #default="{ row }">
-            <span v-if="row.total_objects > 0">
-              <el-tag
-                v-for="(count, name) in row.class_summary"
-                :key="name"
-                size="small"
-                type="warning"
-                style="margin-right: 4px"
-                >{{ name }} ×{{ count }}</el-tag
-              >
-            </span>
-            <span v-else class="text-secondary">未检出病灶</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="total_objects" label="总数" width="60" />
-        <el-table-column prop="inference_time_ms" label="耗时" width="100">
-          <template #default="{ row }"
-            >{{ row.inference_time_ms?.toFixed(0) }}ms</template
-          >
-        </el-table-column>
-        <el-table-column prop="created_at" label="检测时间" width="170" />
-        <el-table-column label="操作" width="80" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              type="primary"
-              text
-              @click.stop="showDetail(row)"
+        <div class="timeline-dot" :class="task.task_type"></div>
+        <div class="timeline-card">
+          <div class="timeline-time">{{ task.created_at }}</div>
+          <div class="timeline-title">
+            <span :class="['event-badge', task.task_type]">{{
+              typeLabel(task.task_type)
+            }}</span>
+            <span v-if="task.total_objects > 0"
+              >检出 <b>{{ task.total_objects }}</b> 个病灶</span
             >
-              详情
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-
-      <div class="pagination-wrap">
-        <el-pagination
-          v-model:current-page="page"
-          :page-size="pageSize"
-          :total="total"
-          layout="total, prev, pager, next"
-          @current-change="fetchTasks"
-        />
+            <span v-else>未检出病灶</span>
+            <span class="timeline-duration"
+              >· {{ task.inference_time_ms?.toFixed(0) }}ms</span
+            >
+          </div>
+          <div class="timeline-tags" v-if="task.class_summary">
+            <span
+              v-for="(count, name) in task.class_summary"
+              :key="name"
+              class="lesion-tag"
+              >{{ name }} ×{{ count }}</span
+            >
+          </div>
+        </div>
       </div>
-    </el-card>
+      <div v-if="!taskList.length && !loading" class="empty-state">
+        暂无检测记录
+      </div>
+    </div>
 
-    <!-- 详情弹窗 -->
+    <div class="pagination-wrap" v-if="total > pageSize">
+      <el-pagination
+        v-model:current-page="page"
+        :page-size="pageSize"
+        :total="total"
+        layout="total, prev, pager, next"
+        @current-change="fetchTasks"
+      />
+    </div>
+
+    <!-- 详情弹窗 — 完全保留原样 -->
     <el-dialog v-model="detailVisible" title="检测详情" width="700px">
       <template v-if="detail">
         <el-descriptions :column="2" border size="small">
@@ -202,7 +188,13 @@ async function fetchTasks() {
 
 function clearFilter() {
   dateRange.value = null;
+  page.value = 1;
   fetchTasks();
+}
+
+function typeLabel(type) {
+  const m = { single: "单图检测", batch: "批量检测", zip: "ZIP检测" };
+  return m[type] || type;
 }
 
 function simpleMd(text) {
@@ -228,40 +220,134 @@ onMounted(fetchTasks);
 
 <style lang="scss" scoped>
 .page-container {
-  padding: 20px;
+  padding: $spacing-xl;
+}
+
+.page-header {
+  margin-bottom: $spacing-lg;
   h2 {
-    margin-bottom: 16px;
-    font-size: 20px;
+    font-size: 22px;
+    font-weight: 700;
+    margin: 0 0 4px;
+    color: $text-primary;
+  }
+  .page-subtitle {
+    font-size: 13px;
+    color: $text-secondary;
   }
 }
+
 .filter-bar {
   display: flex;
-  align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: $spacing-xl;
 }
-.pagination-wrap {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 16px;
+
+.timeline {
+  position: relative;
+  padding-left: 36px;
 }
-.text-secondary {
-  color: #909399;
-  font-size: 13px;
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: #e8ecf0;
 }
-.analysis-text {
+
+.timeline-item {
+  position: relative;
+  margin-bottom: 20px;
+  cursor: pointer;
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.timeline-dot {
+  position: absolute;
+  left: -36px;
+  top: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid #2a9d8f;
+  z-index: 1;
+  &.batch {
+    border-color: #4a7fd9;
+  }
+  &.zip {
+    border-color: #d97706;
+  }
+}
+
+.timeline-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px 20px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 0.2s;
+  &:hover {
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  }
+}
+
+.timeline-time {
+  font-size: 12px;
+  color: $text-secondary;
+  margin-bottom: 6px;
+}
+.timeline-title {
   font-size: 14px;
-  line-height: 1.8;
-  background: #f9fafb;
-  padding: 12px 16px;
-  border-radius: 6px;
-  border-left: 4px solid #2a9d8f;
-  h3 {
-    font-size: 15px;
-    color: #2a9d8f;
+  color: $text-primary;
+}
+.timeline-duration {
+  font-size: 12px;
+  color: $text-secondary;
+  margin-left: 4px;
+}
+
+.event-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 8px;
+  background: #f0fdfa;
+  color: #1b7a6e;
+  &.batch {
+    background: #eff6ff;
+    color: #4a7fd9;
   }
-  p {
-    margin: 4px 0;
+  &.zip {
+    background: #fffbeb;
+    color: #d97706;
   }
+}
+
+.timeline-tags {
+  margin-top: 8px;
+}
+.lesion-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 2px 10px;
+  background: #fef2f2;
+  color: #dc2626;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.pagination-wrap {
+  margin-top: $spacing-xl;
+}
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: $text-secondary;
 }
 </style>

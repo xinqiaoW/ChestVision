@@ -2,7 +2,7 @@
   <header class="app-header">
     <!-- 左侧：Logo + 平台名称 -->
     <div class="header-left">
-      <img src="/favicon.svg" alt="logo" class="header-logo" />
+      <img src="@/assets/xjtulogo.png" alt="logo" class="header-logo" />
       <span class="header-title">胸片X光智能分析系统</span>
     </div>
 
@@ -65,13 +65,15 @@ function handleCommand(command) {
 <style lang="scss" scoped>
 .app-header {
   height: $header-height;
-  background: $bg-white;
-  border-bottom: 1px solid #eceff4;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 $spacing-lg;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  z-index: 100;
 }
 
 .header-left {
@@ -81,8 +83,8 @@ function handleCommand(command) {
 }
 
 .header-logo {
-  width: 32px;
   height: 32px;
+  width: auto;
 }
 
 .header-title {

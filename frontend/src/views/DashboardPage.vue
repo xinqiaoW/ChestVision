@@ -1,80 +1,64 @@
-<template>
+﻿<template>
   <div class="page-container">
-    <h2>📊 数据看板</h2>
+    <div class="page-header">
+      <h2>数据看板</h2>
+      <span class="page-subtitle">Dashboard</span>
+    </div>
 
     <!-- 总览卡片 -->
-    <el-row :gutter="16" class="stats-cards">
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-num">{{ stats.total_detections }}</div>
-          <div class="stat-label">检测总次数</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-num">{{ stats.total_lesions }}</div>
-          <div class="stat-label">检出病灶总数</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-num">{{ stats.avg_inference_time_ms }}ms</div>
-          <div class="stat-label">平均推理耗时</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-num">
+    <div class="kpi-cards">
+      <div class="kpi-card">
+        <div class="kpi-icon kpi-blue">📊</div>
+        <div class="kpi-info">
+          <div class="kpi-num">{{ stats.total_detections || 0 }}</div>
+          <div class="kpi-label">检测总次数</div>
+        </div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon kpi-red">⚠️</div>
+        <div class="kpi-info">
+          <div class="kpi-num">{{ stats.total_lesions || 0 }}</div>
+          <div class="kpi-label">检出病灶总数</div>
+        </div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon kpi-green">⏱️</div>
+        <div class="kpi-info">
+          <div class="kpi-num">{{ stats.avg_inference_time_ms || 0 }}ms</div>
+          <div class="kpi-label">平均推理耗时</div>
+        </div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-icon kpi-teal">🔬</div>
+        <div class="kpi-info">
+          <div class="kpi-num">
             {{
               stats.risk_distribution?.find(
                 (r) => r.name === "high" || r.name === "critical",
               )?.value || 0
             }}
           </div>
-          <div class="stat-label">高风险/危急案例</div>
-        </el-card>
-      </el-col>
-    </el-row>
+          <div class="kpi-label">高风险/危急案例</div>
+        </div>
+      </div>
+    </div>
 
     <!-- 图表区 -->
-    <el-row :gutter="16" style="margin-top: 16px">
-      <el-col :span="12">
-        <el-card shadow="never">
-          <template #header>📈 检测量趋势（近7天）</template>
-          <div ref="trendChartRef" style="height: 300px"></div>
-        </el-card>
-      </el-col>
-      <el-col :span="12">
-        <el-card shadow="never">
-          <template #header>🍩 病灶类型分布</template>
-          <div ref="lesionChartRef" style="height: 300px"></div>
-        </el-card>
-      </el-col>
-    </el-row>
-
-    <el-row :gutter="16" style="margin-top: 16">
-      <el-col :span="12">
-        <el-card shadow="never">
-          <template #header>⚠️ 风险等级分布</template>
-          <div ref="riskChartRef" style="height: 300px"></div>
-        </el-card>
-      </el-col>
-      <el-col :span="12">
-        <el-card shadow="never" v-if="stats.doctor_workload?.length">
-          <template #header>👨‍⚕️ 医生工作量</template>
-          <el-table :data="stats.doctor_workload" size="small">
-            <el-table-column prop="username" label="医生" />
-            <el-table-column prop="patient_count" label="管理病人" width="80" />
-            <el-table-column
-              prop="detection_count"
-              label="检测次数"
-              width="80"
-            />
-            <el-table-column prop="lesion_count" label="检出病灶" width="80" />
-          </el-table>
-        </el-card>
-      </el-col>
-    </el-row>
+    <div class="charts-row">
+      <div class="chart-card chart-large">
+        <div class="chart-header">
+          <h3>影像分析趋势</h3>
+          <span class="chart-period">近7天</span>
+        </div>
+        <div ref="trendChartRef" class="chart-body"></div>
+      </div>
+      <div class="chart-card chart-small">
+        <div class="chart-header">
+          <h3>病灶类型分布</h3>
+        </div>
+        <div ref="lesionChartRef" class="chart-body"></div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -86,7 +70,6 @@ import { nextTick, onMounted, ref } from "vue";
 const stats = ref({});
 const trendChartRef = ref(null);
 const lesionChartRef = ref(null);
-const riskChartRef = ref(null);
 
 onMounted(async () => {
   try {
@@ -99,22 +82,39 @@ onMounted(async () => {
 });
 
 function renderCharts() {
-  // 趋势图
-  if (trendChartRef.value) {
+  if (trendChartRef.value && stats.value.trend?.length) {
     const chart = echarts.init(trendChartRef.value);
+    const dates = stats.value.trend.map((t) => t.date);
+    const counts = stats.value.trend.map((t) => t.count);
     chart.setOption({
       tooltip: { trigger: "axis" },
+      grid: { left: 40, right: 20, top: 20, bottom: 30 },
       xAxis: {
         type: "category",
-        data: stats.value.trend?.map((t) => t.date) || [],
+        data: dates,
+        axisLine: { lineStyle: { color: "#e8ecf0" } },
+        axisTick: { show: false },
+        axisLabel: { color: "#8c8c8c", fontSize: 12 },
       },
-      yAxis: { type: "value", minInterval: 1 },
+      yAxis: {
+        type: "value",
+        minInterval: 1,
+        splitLine: { lineStyle: { color: "#f0f2f5" } },
+        axisLabel: { color: "#8c8c8c", fontSize: 12 },
+      },
       series: [
         {
-          data: stats.value.trend?.map((t) => t.count) || [],
+          data: counts,
           type: "line",
           smooth: true,
-          areaStyle: { color: "rgba(42,157,143,0.15)" },
+          symbol: "circle",
+          symbolSize: 6,
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: "rgba(42,157,143,0.2)" },
+              { offset: 1, color: "rgba(42,157,143,0)" },
+            ]),
+          },
           lineStyle: { color: "#2A9D8F", width: 3 },
           itemStyle: { color: "#2A9D8F" },
         },
@@ -122,42 +122,19 @@ function renderCharts() {
     });
   }
 
-  // 病灶分布饼图
-  if (lesionChartRef.value) {
+  if (lesionChartRef.value && stats.value.lesion_distribution?.length) {
     const chart = echarts.init(lesionChartRef.value);
     chart.setOption({
       tooltip: { trigger: "item" },
+      legend: { bottom: 0, textStyle: { color: "#4A5568", fontSize: 12 } },
       series: [
         {
           type: "pie",
-          radius: ["40%", "70%"],
-          data: stats.value.lesion_distribution || [],
-          label: { formatter: "{b}: {c}" },
-        },
-      ],
-    });
-  }
-
-  // 风险等级柱状图
-  if (riskChartRef.value) {
-    const chart = echarts.init(riskChartRef.value);
-    const riskColors = {
-      low: "#67C23A",
-      medium: "#E6A23C",
-      high: "#F56C6C",
-      critical: "#8B0000",
-    };
-    chart.setOption({
-      tooltip: { trigger: "axis" },
-      xAxis: { type: "category", data: ["低风险", "中风险", "高风险", "危急"] },
-      yAxis: { type: "value", minInterval: 1 },
-      series: [
-        {
-          type: "bar",
-          data: (stats.value.risk_distribution || []).map((r, i) => ({
-            value: r.value,
-            itemStyle: { color: riskColors[r.name] || "#909399" },
-          })),
+          radius: ["55%", "78%"],
+          center: ["50%", "45%"],
+          data: stats.value.lesion_distribution,
+          label: { show: false },
+          itemStyle: { borderColor: "#fff", borderWidth: 3 },
         },
       ],
     });
@@ -167,27 +144,149 @@ function renderCharts() {
 
 <style lang="scss" scoped>
 .page-container {
-  padding: 20px;
+  padding: $spacing-xl;
+}
+
+.page-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: $spacing-xl;
   h2 {
-    margin-bottom: 16px;
-    font-size: 20px;
+    font-size: 22px;
+    font-weight: 700;
+    color: $text-primary;
+    margin: 0;
+  }
+  .page-subtitle {
+    font-size: 13px;
+    color: $text-secondary;
   }
 }
-.stats-cards {
-  margin-bottom: 8px;
+
+.kpi-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: $spacing-md;
+  margin-bottom: $spacing-xl;
 }
-.stat-card {
-  text-align: center;
-  padding: 8px;
+
+.kpi-card {
+  background: #fff;
+  border-radius: $border-radius-lg;
+  padding: 20px 22px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.03);
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s;
+  &:hover {
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+    transform: translateY(-1px);
+  }
 }
-.stat-num {
+
+.kpi-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  flex-shrink: 0;
+  &.kpi-blue {
+    background: #eff6ff;
+  }
+  &.kpi-red {
+    background: #fef2f2;
+  }
+  &.kpi-green {
+    background: #f0fdf4;
+  }
+  &.kpi-teal {
+    background: #f0fdfa;
+  }
+}
+
+.kpi-info {
+  flex: 1;
+}
+
+.kpi-num {
   font-size: 28px;
-  font-weight: 700;
-  color: #2a9d8f;
+  font-weight: 800;
+  color: $text-primary;
+  letter-spacing: -0.5px;
+  line-height: 1.2;
 }
-.stat-label {
+
+.kpi-label {
   font-size: 13px;
-  color: #909399;
+  color: $text-secondary;
   margin-top: 4px;
+}
+
+.kpi-trend {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  &.up {
+    color: #16a34a;
+    background: #f0fdf4;
+  }
+  &.down {
+    color: #dc2626;
+    background: #fef2f2;
+  }
+}
+
+.charts-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: $spacing-md;
+}
+
+.chart-card {
+  background: #fff;
+  border-radius: $border-radius-lg;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.03);
+  padding: 20px 24px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: $text-primary;
+    margin: 0;
+  }
+  .chart-period {
+    font-size: 12px;
+    color: $text-secondary;
+    background: #f5f6f8;
+    padding: 4px 10px;
+    border-radius: 12px;
+  }
+}
+
+.chart-body {
+  height: 300px;
+}
+
+@media (max-width: 1024px) {
+  .kpi-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

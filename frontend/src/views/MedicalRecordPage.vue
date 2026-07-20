@@ -1,21 +1,26 @@
-<template>
+﻿<template>
   <div class="page-container">
     <div class="page-header">
-      <h2>📋 病例管理</h2>
-      <el-button type="primary" @click="showCreateDialog" v-if="canEdit"
+      <div>
+        <h2>病例管理</h2>
+        <span class="page-subtitle">Records</span>
+      </div>
+      <el-button
+        type="primary"
+        size="large"
+        @click="showCreateDialog"
+        v-if="canEdit"
         >+ 新建病例</el-button
       >
     </div>
 
-    <!-- 患者筛选 -->
-    <div class="filter-bar" v-if="isDoctor || isAdmin">
-      <span>筛选患者：</span>
+    <div class="filter-bar">
       <el-select
         v-model="filterPatientId"
-        placeholder="全部患者"
+        placeholder="全部类型"
         clearable
         @change="fetchRecords"
-        style="width: 240px"
+        style="width: 180px"
         :loading="loadingPatients"
       >
         <el-option
@@ -25,62 +30,70 @@
           :value="p.id"
         />
       </el-select>
+      <el-select
+        v-model="filterStatus"
+        placeholder="全部状态"
+        clearable
+        style="width: 180px"
+        @change="fetchRecords"
+      >
+        <el-option label="草稿" value="draft" /><el-option
+          label="完成"
+          value="completed"
+        /><el-option label="已审核" value="reviewed" />
+      </el-select>
     </div>
 
-    <el-card shadow="never">
-      <el-table :data="records" stripe v-loading="loading">
-        <el-table-column prop="patient_code" label="患者编号" width="110" />
-        <el-table-column prop="patient_name" label="患者姓名" width="100">
-          <template #default="{ row }">{{ row.patient_name || "-" }}</template>
+    <div class="table-card">
+      <el-table :data="records" v-loading="loading">
+        <el-table-column label="编号" width="120"
+          ><template #default="{ row }"
+            >REC-{{ row.id }}</template
+          ></el-table-column
+        >
+        <el-table-column label="患者" min-width="140">
+          <template #default="{ row }">{{
+            row.patient_name || row.patient_code || "-"
+          }}</template>
         </el-table-column>
-        <el-table-column label="就诊类型" width="90">
+        <el-table-column label="检查类型" width="130">
+          <template #default="{ row }"
+            ><span class="scan-type">{{
+              typeLabel(row.record_type)
+            }}</span></template
+          >
+        </el-table-column>
+        <el-table-column prop="visit_date" label="就诊时间" width="160" />
+        <el-table-column label="状态" width="150">
           <template #default="{ row }">
-            <el-tag size="small" :type="typeColor(row.record_type)">
-              {{ typeLabel(row.record_type) }}
-            </el-tag>
+            <span :class="['status-pill', row.record_status]">{{
+              statusPillLabel(row.record_status)
+            }}</span>
           </template>
         </el-table-column>
-        <el-table-column
-          prop="chief_complaint"
-          label="主诉"
-          min-width="150"
-          show-overflow-tooltip
-        />
-        <el-table-column label="状态" width="80">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-tag size="small">{{
-              row.record_status === "draft"
-                ? "草稿"
-                : row.record_status === "completed"
-                  ? "完成"
-                  : "已审核"
-            }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="visit_date" label="就诊日期" width="110" />
-        <el-table-column label="操作" width="160" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="showDetail(row)"
+            <el-button size="small" link type="primary" @click="showDetail(row)"
               >查看</el-button
             >
             <el-button
               size="small"
-              text
-              type="success"
+              link
+              type="primary"
               @click="printRecord(row)"
               >打印</el-button
             >
             <el-button
               size="small"
-              text
-              type="warning"
+              link
+              type="primary"
               @click="showEditDialog(row)"
               v-if="canEdit"
               >编辑</el-button
             >
             <el-button
               size="small"
-              text
+              link
               type="danger"
               @click="handleDelete(row)"
               v-if="isAdmin"
@@ -89,14 +102,8 @@
           </template>
         </el-table-column>
       </el-table>
-      <p
-        v-if="records.length === 0 && !loading"
-        class="text-secondary"
-        style="text-align: center; padding: 40px"
-      >
-        暂无病例记录
-      </p>
-    </el-card>
+      <p v-if="!records.length && !loading" class="empty-state">暂无病例记录</p>
+    </div>
 
     <!-- 创建/编辑弹窗 -->
     <el-dialog
@@ -292,6 +299,16 @@ const formVisible = ref(false);
 const editingRecord = ref(null);
 const saving = ref(false);
 const filterPatientId = ref(null);
+const filterStatus = ref(null);
+
+function statusPillLabel(s) {
+  const map = {
+    draft: "待处理",
+    completed: "AI已分析",
+    reviewed: "医生已审核",
+  };
+  return map[s] || s;
+}
 const patientOptions = ref([]);
 const loadingPatients = ref(false);
 const attachments = ref([]);
@@ -501,26 +518,71 @@ onMounted(() => {
 
 <style lang="scss" scoped>
 .page-container {
-  padding: 20px;
+  padding: $spacing-xl;
 }
+
 .page-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  justify-content: space-between;
+  margin-bottom: $spacing-lg;
+  flex-wrap: wrap;
+  gap: 12px;
   h2 {
-    font-size: 20px;
-    margin: 0;
+    font-size: 22px;
+    font-weight: 700;
+    margin: 0 0 4px;
+    color: $text-primary;
+  }
+  .page-subtitle {
+    font-size: 13px;
+    color: $text-secondary;
   }
 }
+
 .filter-bar {
-  margin-bottom: 12px;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
+  gap: 12px;
+  margin-bottom: $spacing-md;
 }
-.text-secondary {
-  color: #909399;
+
+.table-card {
+  background: #fff;
+  border-radius: $border-radius-lg;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.03);
+  overflow: hidden;
+}
+
+.scan-type {
+  font-size: 13px;
+  color: $text-regular;
+  font-weight: 500;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  &.completed {
+    color: #16a34a;
+    background: #f0fdf4;
+  }
+  &.reviewed {
+    color: #2563eb;
+    background: #eff6ff;
+  }
+  &.draft {
+    color: #d97706;
+    background: #fffbeb;
+  }
+}
+
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: $text-secondary;
+  font-size: 14px;
 }
 </style>

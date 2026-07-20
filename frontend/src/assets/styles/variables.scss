@@ -18,9 +18,9 @@ $bg-white: #FFFFFF;
 $sidebar-bg: #1a1f2e;          // 深海军蓝背景
 $sidebar-text: #8b8fa3;        // 菜单文字
 $sidebar-text-hover: #e0e2ea;  // 悬停文字
-$sidebar-active-text: #56d4c1; // 激活文字（青绿高亮）
-$sidebar-active-bg: rgba(86, 212, 193, 0.1);  // 激活背景
-$sidebar-active-bar: #56d4c1;  // 激活左侧指示条
+$sidebar-active-text: #2A9D8F; // 激活文字（青绿高亮）
+$sidebar-active-bg: rgba(42, 157, 143, 0.12);  // 激活背景
+$sidebar-active-bar: #2A9D8F;  // 激活左侧指示条
 $sidebar-logo-bg: rgba(255,255,255,0.04);      // Logo区背景
 $sidebar-divider: rgba(255,255,255,0.06);       // 分割线
 $sidebar-footer-bg: rgba(0,0,0,0.15);           // 底部区域
@@ -45,14 +45,17 @@ $spacing-lg: 24px;
 $spacing-xl: 32px;
 
 // ── 圆角 ────────────────────────────────────────────
-$border-radius-sm: 6px;
-$border-radius-md: 10px;
-$border-radius-lg: 16px;
+$border-radius-sm: 8px;
+$border-radius-md: 14px;
+$border-radius-lg: 20px;
+$border-radius-xl: 24px;
 
-// ── 阴影 ────────────────────────────────────────────
+// ── 阴影（医疗科技风：弥散柔和）────────────────────
+$shadow-xs: 0 1px 4px rgba(0,0,0,0.03);
 $shadow-sm: 0 2px 8px rgba(0,0,0,0.04);
-$shadow-md: 0 4px 16px rgba(0,0,0,0.08);
-$shadow-lg: 0 8px 32px rgba(0,0,0,0.12);
+$shadow-md: 0 4px 20px rgba(0,0,0,0.05);
+$shadow-lg: 0 8px 40px rgba(0,0,0,0.08);
+$shadow-glow: 0 0 20px rgba(42,157,143,0.12);
 
 // ── 字体 ────────────────────────────────────────────
 $font-family: 'Inter', 'HarmonyOS Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
