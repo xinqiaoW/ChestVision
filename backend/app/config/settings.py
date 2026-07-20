@@ -35,10 +35,13 @@ class Settings(BaseSettings):
     DB_NAME: str = "chestx_agent"
     DB_USER: str = "chestx_admin"
     DB_PASSWORD: str = "chestx_admin"
+    DATABASE_URL_OVERRIDE: str = ""
 
     @property
     def DATABASE_URL(self) -> str:
-        """构造 PostgreSQL 连接字符串"""
+        """优先使用显式连接串，否则构造 PostgreSQL 连接字符串。"""
+        if self.DATABASE_URL_OVERRIDE:
+            return self.DATABASE_URL_OVERRIDE
         return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     # ── Redis 配置 ────────────────────────────────────

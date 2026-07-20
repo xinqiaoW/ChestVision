@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.dashboard import router as dashboard_router
 from app.api.detection import router as detection_router
+from app.api.doctor_recommendation import router as doctor_recommendation_router
 from app.api.health import router as health_router
 from app.api.medical_record import router as medical_record_router
 from app.api.patient import router as patient_router
@@ -14,8 +16,10 @@ from app.api.knowledge import router as knowledge_router  # Day11: 知识库管�
 from app.config.settings import settings
 from app.core.exceptions import register_exception_handlers
 from app.middleware.request_logger import RequestLogMiddleware
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 
 def init_minio():
@@ -72,6 +76,7 @@ app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(training_router)  # 注册训练 API 路由
 app.include_router(detection_router)  # 注册检测 API 路由
+app.include_router(doctor_recommendation_router)  # AI 医生推荐
 app.include_router(chat_router)  # 注册对话 API 路由
 app.include_router(patient_router)  # 注册患者管理 API 路由
 app.include_router(medical_record_router)  # 注册病例管理 API 路由
@@ -81,14 +86,42 @@ app.include_router(profile_router)  # 注册个人中心 API 路由
 app.include_router(knowledge_router)  # Day11: 注册知识库管理 API 路由
 
 
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+FRONTEND_INDEX = FRONTEND_DIST / "index.html"
+if (FRONTEND_DIST / "assets").is_dir():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=FRONTEND_DIST / "assets"),
+        name="frontend-assets",
+    )
+
+
 @app.get("/")
 def root():
+    if FRONTEND_INDEX.is_file():
+        return FileResponse(FRONTEND_INDEX)
     return {
         "message": "欢迎使用胸片X光智能分析系统",
         "version": "0.1.0",
         "docs": "/docs",
         "redoc": "/redoc",
     }
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def frontend_spa(full_path: str):
+    """用户态部署时由 FastAPI 同源提供已构建的 Vue 页面。"""
+    if full_path.startswith("api/") or not FRONTEND_INDEX.is_file():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    candidate = (FRONTEND_DIST / full_path).resolve()
+    try:
+        candidate.relative_to(FRONTEND_DIST.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not Found") from None
+    if candidate.is_file():
+        return FileResponse(candidate)
+    return FileResponse(FRONTEND_INDEX)
 
 
 if __name__ == "__main__":

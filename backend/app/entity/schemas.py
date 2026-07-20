@@ -30,10 +30,9 @@ class UserRegister(BaseModel):
     username: str = Field(..., min_length=3, max_length=50, description="用户名")
     email: str = Field(..., description="邮箱")
     password: str = Field(..., min_length=6, max_length=100, description="密码")
-    user_type: str = Field(
+    user_type: Literal["doctor", "patient"] = Field(
         default="patient",
-        pattern="^(admin|doctor|patient)$",
-        description="用户类型：admin / doctor / patient",
+        description="公开注册仅允许医生或患者；管理员账号由系统初始化或管理员创建",
     )
 
 

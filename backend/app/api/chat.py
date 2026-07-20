@@ -21,6 +21,7 @@ from app.core.logger import get_logger
 from app.services import chat_service
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import SystemMessage
 
 logger = get_logger(__name__)
 
@@ -87,7 +88,34 @@ async def chat_stream(
         logger.error("创建/获取会话失败: %s", str(e))
         raise HTTPException(status_code=500, detail="创建会话失败")
 
-    # ── ② 保存用户消息 ──
+    # ── ② 在保存本轮消息前加载历史，避免把当前问题重复放入上下文 ──
+    chat_history = []
+    if session_id:
+        try:
+            chat_history = chat_service.build_langchain_history(
+                session_id=db_session_id,
+                user_id=current_user.id,
+            )
+            logger.info("加载 %d 条历史消息到 Agent 上下文", len(chat_history))
+        except Exception as e:
+            logger.warning("加载对话历史失败: %s", str(e))
+
+    # 当前用户有权知道自己的登录身份。历史中的自述姓名、专长等信息也应
+    # 作为后续对话上下文使用，而不是以“隐私限制”为由遗忘。
+    chat_history.insert(
+        0,
+        SystemMessage(
+            content=(
+                "[当前登录用户上下文] "
+                f"用户ID={current_user.id}，账号={current_user.username}，"
+                f"用户类型={current_user.user_type}，邮箱={current_user.email}。"
+                "你可以向当前用户复述其本人的这些信息。若历史消息中用户曾自述姓名、"
+                "职称、专长或偏好，应在后续回答中记住并注明这是用户自述信息。"
+            )
+        ),
+    )
+
+    # ── ③ 保存用户消息 ──
     try:
         chat_service.save_message(
             session_id=db_session_id,
@@ -185,19 +213,7 @@ async def chat_stream(
         full_response = ""  # 收集完整回复
         start_time = time.time()
 
-        # ── ④ 加载对话历史（DB持久化层）──
-        chat_history = []
-        if session_id:
-            try:
-                chat_history = chat_service.build_langchain_history(
-                    session_id=db_session_id,
-                    user_id=current_user.id,
-                )
-                logger.info("加载 %d 条历史消息到 Agent 上下文", len(chat_history))
-            except Exception as e:
-                logger.warning("加载对话历史失败: %s", str(e))
-
-        # ── ⑤ Day11: 缓存用户消息到 Redis 记忆 ──
+        # ── ④ Day11: 缓存用户消息到 Redis 记忆 ──
         try:
             from app.agent.memory import conversation_memory
             conversation_memory.save_message(
@@ -221,6 +237,11 @@ async def chat_stream(
                 user_id=current_user.id,
                 session_id=str(db_session_id),
             ):
+                # DetectionAgent 的内部 done 不含会话 ID。若转发，前端会提前
+                # 结束 SSE，收不到下面携带 session_id 的最终 done，导致每轮
+                # 对话都新建会话、历史永久丢失。
+                if event.get("type") == "done":
+                    continue
                 event_data = json.dumps(event, ensure_ascii=False)
                 yield f"data: {event_data}\n\n"
 

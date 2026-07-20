@@ -204,13 +204,21 @@
       >
       <el-button v-else type="danger" @click="stopChat">停止</el-button>
     </div>
+
+    <DoctorRecommendationDialog
+      v-model="recommendationVisible"
+      :task-id="recommendationTaskId"
+      :patient-profile-id="selectedPatientId"
+      :session-id="agentStore.currentSessionId"
+    />
   </div>
 </template>
 
 <script setup>
-import { detectBatch, detectSingle, detectZip } from "@/api/detection";
+import { detectZip } from "@/api/detection";
 import { getPatients } from "@/api/patient";
 import DetectionResultCard from "@/components/DetectionResultCard.vue";
+import DoctorRecommendationDialog from "@/components/DoctorRecommendationDialog.vue";
 import { useAgentStore } from "@/stores/agent";
 import { useUserStore } from "@/stores/user";
 import request from "@/utils/request";
@@ -230,6 +238,8 @@ const fileInputRef = ref(null);
 const selectedPatientId = ref(null);
 const patientList = ref([]);
 const showSessions = ref(false);
+const recommendationVisible = ref(false);
+const recommendationTaskId = ref(null);
 
 function scrollBottom() {
   nextTick(() => {
@@ -322,6 +332,9 @@ async function sendMsg() {
         fd.append("file", f);
         const detectRes = await request.post("/detection/detect", fd, {
           headers: { "Content-Type": "multipart/form-data" },
+          params: {
+            patient_profile_id: selectedPatientId.value || undefined,
+          },
           timeout: 120000,
         });
         detectionResults.push(detectRes);
@@ -370,6 +383,13 @@ async function sendMsg() {
           0,
         ),
       };
+    }
+    const recommendableResult = detectionResults.find(
+      (item) => item.total_objects > 0 && item.task_id,
+    );
+    if (recommendableResult) {
+      recommendationTaskId.value = recommendableResult.task_id;
+      recommendationVisible.value = true;
     }
     scrollBottom();
     return;
@@ -563,12 +583,43 @@ async function quickDetect(type) {
       else if (files.length === 1) fd.append("file", files[0]);
       else files.forEach((f) => fd.append("files", f));
 
-      const api = isZip
-        ? detectZip
-        : files.length === 1
-          ? detectSingle
-          : detectBatch;
-      const result = await api(fd);
+      let result;
+      let recommendableResult = null;
+      if (isZip) {
+        result = await detectZip(fd);
+      } else {
+        const results = [];
+        for (const file of files) {
+          const imageForm = new FormData();
+          imageForm.append("file", file);
+          const item = await request.post("/detection/detect", imageForm, {
+            headers: { "Content-Type": "multipart/form-data" },
+            params: {
+              patient_profile_id: selectedPatientId.value || undefined,
+            },
+            timeout: 120000,
+          });
+          results.push(item);
+        }
+        recommendableResult = results.find(
+          (item) => item.total_objects > 0 && item.task_id,
+        );
+        result = results.length === 1
+          ? {
+              ...results[0],
+              detections: results[0].objects,
+              inference_time: results[0].inference_time_ms,
+            }
+          : {
+              total_objects: results.reduce((sum, item) => sum + item.total_objects, 0),
+              detections: results.flatMap((item) => item.objects),
+              inference_time: results.reduce(
+                (sum, item) => sum + item.inference_time_ms,
+                0,
+              ),
+              annotated_image_base64: "",
+            };
+      }
       const last = agentStore.messages[agentStore.messages.length - 1];
       last.content =
         result.total_objects > 0
@@ -576,6 +627,10 @@ async function quickDetect(type) {
           : "检测完成，未发现明显病灶";
       last.loading = false;
       last.detectionResult = result;
+      if (recommendableResult) {
+        recommendationTaskId.value = recommendableResult.task_id;
+        recommendationVisible.value = true;
+      }
     } catch (err) {
       const last = agentStore.messages[agentStore.messages.length - 1];
       last.content = `检测失败：${err.message}`;

@@ -120,10 +120,6 @@
                   label="医生 — 管理病人、编辑病例、分析诊断"
                   value="doctor"
                 />
-                <el-option
-                  label="管理员 — 系统管理、分配医患关系"
-                  value="admin"
-                />
               </el-select>
             </el-form-item>
             <el-form-item prop="password"

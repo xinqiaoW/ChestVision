@@ -572,6 +572,40 @@ class ChatMessage(Base):
     session = relationship("ChatSession", back_populates="messages")
 
 
+class DoctorRecommendation(Base):
+    """AI 医生推荐审计记录 — 保存模型当时的排序与推荐依据。"""
+
+    __tablename__ = "doctor_recommendations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    detection_task_id = Column(
+        Integer, ForeignKey("detection_tasks.id"), nullable=False, index=True
+    )
+    patient_profile_id = Column(
+        Integer, ForeignKey("patient_profiles.id"), nullable=True, index=True
+    )
+    doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    rank = Column(Integer, nullable=False)
+    match_score = Column(Float, nullable=False, default=0)
+    display_name = Column(String(100), nullable=False)
+    specialty = Column(String(200), nullable=True)
+    matched_lesions = Column(JSON, nullable=True)
+    reasons = Column(JSON, nullable=True)
+    summary = Column(Text, nullable=True)
+    context_snapshot = Column(JSON, nullable=True)
+    model_name = Column(String(100), nullable=True)
+    selection_method = Column(String(20), default="ai", comment="ai / fallback")
+    status = Column(
+        String(20), default="recommended", comment="recommended / selected / dismissed"
+    )
+    selected_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    selected_at = Column(DateTime, nullable=True)
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    review_note = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+
 # ══════════════════════════════════════════════════════════════
 # 五、系统运维
 # ══════════════════════════════════════════════════════════════

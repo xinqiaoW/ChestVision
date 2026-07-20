@@ -62,6 +62,25 @@
                 />
               </el-select>
             </div>
+            <div
+              v-if="userStore.userType === 'doctor' || userStore.userType === 'admin'"
+              class="param-item"
+            >
+              <span>关联患者（用于病史分析与医生匹配）</span>
+              <el-select
+                v-model="selectedPatientId"
+                placeholder="选择患者（可选）"
+                style="width: 100%"
+                clearable
+              >
+                <el-option
+                  v-for="patient in patientList"
+                  :key="patient.id"
+                  :label="`${patient.patient_code} ${patient.real_name || patient.username}`"
+                  :value="patient.id"
+                />
+              </el-select>
+            </div>
           </div>
 
           <!-- 检测按钮 -->
@@ -214,10 +233,21 @@
         />
       </div>
     </div>
+
+    <DoctorRecommendationDialog
+      v-model="recommendationVisible"
+      :task-id="recommendationTaskId"
+      :patient-profile-id="selectedPatientId"
+      :session-id="agentStore.currentSessionId"
+    />
   </div>
 </template>
 
 <script setup>
+import { getPatients } from "@/api/patient";
+import DoctorRecommendationDialog from "@/components/DoctorRecommendationDialog.vue";
+import { useAgentStore } from "@/stores/agent";
+import { useUserStore } from "@/stores/user";
 import { Loading, UploadFilled } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { onMounted, ref } from "vue";
@@ -235,6 +265,12 @@ const detecting = ref(false);
 // ── 模型选择 ──
 const modelList = ref([]);
 const selectedModelId = ref(null);
+const selectedPatientId = ref(null);
+const patientList = ref([]);
+const recommendationVisible = ref(false);
+const recommendationTaskId = ref(null);
+const userStore = useUserStore();
+const agentStore = useAgentStore();
 
 // ── 检测结果 ──
 const detectResult = ref(null);
@@ -342,8 +378,19 @@ async function fetchModels() {
   }
 }
 
+async function fetchPatients() {
+  if (userStore.userType !== "doctor" && userStore.userType !== "admin") return;
+  try {
+    const result = await getPatients();
+    patientList.value = result.items || [];
+  } catch {
+    patientList.value = [];
+  }
+}
+
 onMounted(() => {
   fetchModels();
+  fetchPatients();
 });
 
 // ── 开始检测 ──
@@ -363,6 +410,9 @@ async function startDetect() {
     if (selectedModelId.value) {
       params.model_version_id = selectedModelId.value;
     }
+    if (selectedPatientId.value) {
+      params.patient_profile_id = selectedPatientId.value;
+    }
     const res = await request.post("/detection/detect", formData, {
       headers: { "Content-Type": "multipart/form-data" },
       params,
@@ -378,6 +428,8 @@ async function startDetect() {
 
     if (res.total_objects > 0) {
       ElMessage.success(`检测完成，发现 ${res.total_objects} 个病灶`);
+      recommendationTaskId.value = res.task_id;
+      recommendationVisible.value = true;
     } else {
       ElMessage.success("检测完成，未发现明显病灶");
     }
