@@ -263,16 +263,20 @@
           >
             <el-select
               v-model="trainForm.dataset_id"
+              filterable
+              :filter-method="filterTrainingDatasets"
+              no-data-text="暂无已上传数据集"
+              no-match-text="没有匹配的数据集"
               placeholder="选择数据集"
               style="flex: 1"
               @change="onDatasetChange"
+              @visible-change="onDatasetSelectVisibleChange"
             >
               <el-option
-                v-for="ds in datasetList"
+                v-for="ds in filteredTrainingDatasets"
                 :key="ds.upload_id"
                 :label="formatDatasetOption(ds)"
                 :value="ds.dataset_id"
-                :disabled="!isDatasetTrainable(ds)"
               />
             </el-select>
             <el-button @click="showUploadDataset = true" :icon="Upload"
@@ -283,9 +287,7 @@
             v-if="selectedDataset"
             style="margin-top: 6px; font-size: 12px; color: #909399"
           >
-            OSS 数据集：{{ selectedDataset.dataset_name }} ·
-            {{ datasetStatusText(selectedDataset.status) }} ·
-            {{ formatBytes(selectedDataset.actual_size || selectedDataset.expected_size) }}
+            {{ formatDatasetOption(selectedDataset) }}
           </div>
         </el-form-item>
         <el-form-item label="检测场景">
@@ -514,6 +516,7 @@ let pollTimer = null;
 
 // 数据集管理
 const datasetList = ref([]);
+const datasetNameFilter = ref("");
 const showUploadDataset = ref(false);
 const uploadFile = ref(null);
 const uploadFileList = ref([]);
@@ -531,8 +534,16 @@ const selectedDataset = computed(() => {
 });
 
 const availableTrainingDatasets = computed(() =>
-  datasetList.value.filter((d) => ["UPLOADED", "READY"].includes(d.status)),
+  datasetList.value.filter((d) => isDatasetTrainable(d)),
 );
+
+const filteredTrainingDatasets = computed(() => {
+  const keyword = datasetNameFilter.value.trim().toLowerCase();
+  if (!keyword) return availableTrainingDatasets.value;
+  return availableTrainingDatasets.value.filter((dataset) =>
+    getDatasetName(dataset).toLowerCase().includes(keyword),
+  );
+});
 
 // 【Day 7 新增】模型操作状态
 const validating = ref(false);
@@ -818,11 +829,11 @@ function stopPolling() {
 
 async function createTask() {
   if (!trainForm.value.dataset_id) {
-    ElMessage.warning("请选择已上传完成的数据集");
+    ElMessage.warning("请选择状态为已上传的数据集");
     return;
   }
   if (!selectedDataset.value || !isDatasetTrainable(selectedDataset.value)) {
-    ElMessage.warning("数据集尚未完成 OSS 服务端确认，暂不能启动训练");
+    ElMessage.warning("只能选择状态为已上传的数据集");
     return;
   }
   creating.value = true;
@@ -856,8 +867,12 @@ async function fetchDatasets() {
   try {
     const res = await request.get("/training/remote/datasets");
     datasetList.value = res.datasets || [];
-    if (!trainForm.value.dataset_id && availableTrainingDatasets.value.length) {
-      trainForm.value.dataset_id = availableTrainingDatasets.value[0].dataset_id;
+    const currentAvailable = availableTrainingDatasets.value.some(
+      (dataset) => dataset.dataset_id === trainForm.value.dataset_id,
+    );
+    if (!currentAvailable) {
+      trainForm.value.dataset_id =
+        availableTrainingDatasets.value[0]?.dataset_id || "";
     }
   } catch {
     /* ignore */
@@ -866,6 +881,16 @@ async function fetchDatasets() {
 
 function onDatasetChange(datasetId) {
   if (!datasetId) return;
+}
+
+function filterTrainingDatasets(value) {
+  datasetNameFilter.value = value;
+}
+
+function onDatasetSelectVisibleChange(visible) {
+  if (!visible) {
+    datasetNameFilter.value = "";
+  }
 }
 
 async function doUploadDataset() {
@@ -889,7 +914,7 @@ async function doUploadDataset() {
     uploadDatasetName.value = "";
     await fetchDatasets();
     const uploaded = result.upload;
-    if (uploaded?.dataset_id) {
+    if (uploaded?.dataset_id && isDatasetTrainable(uploaded)) {
       trainForm.value.dataset_id = uploaded.dataset_id;
     }
   } catch (e) {
@@ -946,11 +971,24 @@ function updateUploadProgress(progress) {
 
 function formatDatasetOption(dataset) {
   const size = formatBytes(dataset.actual_size || dataset.expected_size);
-  return `${dataset.dataset_name} · ${datasetStatusText(dataset.status)} · ${size}`;
+  return `${getDatasetName(dataset)}-${formatDatasetUploadTime(dataset)}-${size}`;
 }
 
 function isDatasetTrainable(dataset) {
-  return ["UPLOADED", "READY"].includes(dataset?.status);
+  return dataset?.status === "UPLOADED";
+}
+
+function getDatasetName(dataset) {
+  return dataset?.dataset_name || dataset?.name || dataset?.dataset_id || "-";
+}
+
+function formatDatasetUploadTime(dataset) {
+  return formatDate(
+    dataset?.server_verified_at ||
+      dataset?.client_completed_at ||
+      dataset?.updated_at ||
+      dataset?.created_at,
+  );
 }
 
 function datasetStatusText(status) {
@@ -974,6 +1012,11 @@ function formatBytes(value) {
     return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
   }
   return `${(size / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function formatDate(value) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
 }
 
 function formatSpeed(value) {

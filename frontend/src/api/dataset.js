@@ -6,7 +6,120 @@ export function getDatasets() {
   return request.get("/training/remote/datasets");
 }
 
-export function createDatasetUpload({ datasetName, file, partSize }) {
+export class DatasetUploadCancelledError extends Error {
+  constructor(message = "上传已取消") {
+    super(message);
+    this.name = "DatasetUploadCancelledError";
+    this.code = "UPLOAD_CANCELLED";
+  }
+}
+
+class DatasetUploadPausedError extends Error {
+  constructor() {
+    super("上传已暂停");
+    this.name = "DatasetUploadPausedError";
+  }
+}
+
+export function createDatasetUploadController() {
+  const listeners = new Set();
+  const state = {
+    cancelled: false,
+    paused: false,
+    activeXhr: null,
+    abortController: new AbortController(),
+    pausePromise: null,
+    pauseResolver: null,
+  };
+
+  const snapshot = () => ({
+    cancelled: state.cancelled,
+    paused: state.paused,
+  });
+
+  const notify = () => {
+    const current = snapshot();
+    listeners.forEach((listener) => listener(current));
+  };
+
+  const ensurePausePromise = () => {
+    if (!state.pausePromise) {
+      state.pausePromise = new Promise((resolve) => {
+        state.pauseResolver = resolve;
+      });
+    }
+    return state.pausePromise;
+  };
+
+  const resolvePause = () => {
+    if (state.pauseResolver) {
+      state.pauseResolver();
+    }
+    state.pauseResolver = null;
+    state.pausePromise = null;
+  };
+
+  const throwIfCancelled = () => {
+    if (state.cancelled) {
+      throw new DatasetUploadCancelledError();
+    }
+  };
+
+  return {
+    get isCancelled() {
+      return state.cancelled;
+    },
+    get isPaused() {
+      return state.paused;
+    },
+    get signal() {
+      return state.abortController.signal;
+    },
+    onStateChange(listener) {
+      listeners.add(listener);
+      listener(snapshot());
+      return () => listeners.delete(listener);
+    },
+    pause() {
+      if (state.cancelled || state.paused) return;
+      state.paused = true;
+      state.activeXhr?.abort();
+      notify();
+    },
+    resume() {
+      if (state.cancelled || !state.paused) return;
+      state.paused = false;
+      resolvePause();
+      notify();
+    },
+    cancel() {
+      if (state.cancelled) return;
+      state.cancelled = true;
+      state.paused = false;
+      state.abortController.abort();
+      state.activeXhr?.abort();
+      resolvePause();
+      notify();
+    },
+    bindXhr(xhr) {
+      state.activeXhr = xhr;
+      return () => {
+        if (state.activeXhr === xhr) {
+          state.activeXhr = null;
+        }
+      };
+    },
+    async waitIfPaused() {
+      while (state.paused && !state.cancelled) {
+        await ensurePausePromise();
+      }
+      throwIfCancelled();
+    },
+    throwIfCancelled,
+  };
+}
+
+export function createDatasetUpload({ datasetName, file, partSize }, config = {}) {
   return request.post("/training/remote/uploads", {
     scene_name: datasetName,
     dataset_name: datasetName,
@@ -15,23 +128,27 @@ export function createDatasetUpload({ datasetName, file, partSize }) {
     expected_size: file.size,
     upload_mode: "multipart",
     part_size: partSize,
-  });
+  }, config);
 }
 
-export function signDatasetUploadParts(uploadId, partNumbers) {
+export function signDatasetUploadParts(uploadId, partNumbers, config = {}) {
   return request.post(`/training/remote/uploads/${uploadId}/multipart/parts/sign`, {
     part_numbers: partNumbers,
-  });
+  }, config);
 }
 
-export function completeDatasetUpload(uploadId, parts) {
+export function completeDatasetUpload(uploadId, parts, config = {}) {
   return request.post(`/training/remote/uploads/${uploadId}/multipart/complete`, {
     parts,
-  });
+  }, config);
 }
 
-export function abortDatasetUpload(uploadId) {
-  return request.post(`/training/remote/uploads/${uploadId}/multipart/abort`);
+export function abortDatasetUpload(uploadId, config = {}) {
+  return request.post(
+    `/training/remote/uploads/${uploadId}/multipart/abort`,
+    undefined,
+    config,
+  );
 }
 
 export function deleteDataset(datasetRef) {
@@ -40,9 +157,29 @@ export function deleteDataset(datasetRef) {
   );
 }
 
-export async function uploadDataset({ datasetName, file, onProgress }) {
+export async function uploadDataset({ datasetName, file, onProgress, controller }) {
   const partSize = DATASET_UPLOAD_PART_SIZE;
-  const session = await createDatasetUpload({ datasetName, file, partSize });
+  let session = null;
+  let pausedDurationMs = 0;
+  let pauseVersion = 0;
+
+  const requestConfig = controller?.signal
+    ? { signal: controller.signal, silent: true }
+    : {};
+
+  try {
+    await controller?.waitIfPaused();
+    controller?.throwIfCancelled();
+    session = await createDatasetUpload(
+      { datasetName, file, partSize },
+      requestConfig,
+    );
+  } catch (error) {
+    if (controller?.isCancelled && isAbortLikeError(error)) {
+      throw new DatasetUploadCancelledError();
+    }
+    throw error;
+  }
   const multipart = session.multipart || {};
   const resolvedPartSize = multipart.part_size || partSize;
   const totalParts = Math.ceil(file.size / resolvedPartSize);
@@ -53,7 +190,10 @@ export async function uploadDataset({ datasetName, file, onProgress }) {
 
   const emitProgress = (phase, currentPartNumber = null) => {
     const uploadedBytes = uploadedBytesByPart.reduce((sum, value) => sum + value, 0);
-    const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
+    const elapsedSeconds = Math.max(
+      (Date.now() - startedAt - pausedDurationMs) / 1000,
+      0.001,
+    );
     const speedBytesPerSecond = uploadedBytes / elapsedSeconds;
     const remainingBytes = Math.max(file.size - uploadedBytes, 0);
     const remainingSeconds =
@@ -71,25 +211,84 @@ export async function uploadDataset({ datasetName, file, onProgress }) {
     });
   };
 
+  const waitForResume = async (currentPartNumber = null) => {
+    if (!controller?.isPaused) {
+      controller?.throwIfCancelled();
+      return;
+    }
+    const pausedAt = Date.now();
+    emitProgress("paused", currentPartNumber);
+    await controller.waitIfPaused();
+    pausedDurationMs += Date.now() - pausedAt;
+    pauseVersion += 1;
+  };
+
+  const signSinglePart = async (partNumber) => {
+    const signed = await signDatasetUploadParts(
+      session.upload_id,
+      [partNumber],
+      requestConfig,
+    );
+    controller?.throwIfCancelled();
+    const part = (signed.parts || [])[0];
+    if (!part?.url) {
+      throw new Error(`第 ${partNumber} 片上传 URL 签发失败`);
+    }
+    return part;
+  };
+
   try {
     emitProgress("signing");
     for (let start = 1; start <= totalParts; start += maxPartsPerSign) {
+      await waitForResume();
       const end = Math.min(start + maxPartsPerSign - 1, totalParts);
       const partNumbers = [];
       for (let partNumber = start; partNumber <= end; partNumber += 1) {
         partNumbers.push(partNumber);
       }
-      const signed = await signDatasetUploadParts(session.upload_id, partNumbers);
+      const signed = await signDatasetUploadParts(
+        session.upload_id,
+        partNumbers,
+        requestConfig,
+      );
+      controller?.throwIfCancelled();
       const signedParts = signed.parts || [];
+      const batchPauseVersion = pauseVersion;
       for (const part of signedParts) {
         const partIndex = part.part_number - 1;
         const blobStart = partIndex * resolvedPartSize;
         const blobEnd = Math.min(blobStart + resolvedPartSize, file.size);
         const blob = file.slice(blobStart, blobEnd);
-        const etag = await putOssPart(part.url, blob, (loaded) => {
-          uploadedBytesByPart[partIndex] = loaded;
+        let etag = null;
+        let uploadPart = part;
+        let partPauseVersion = batchPauseVersion;
+        while (!etag) {
+          await waitForResume(part.part_number);
+          if (partPauseVersion !== pauseVersion) {
+            uploadPart = await signSinglePart(part.part_number);
+            partPauseVersion = pauseVersion;
+          }
+          uploadedBytesByPart[partIndex] = 0;
           emitProgress("uploading", part.part_number);
-        });
+          try {
+            etag = await putOssPart(
+              uploadPart.url,
+              blob,
+              (loaded) => {
+                uploadedBytesByPart[partIndex] = loaded;
+                emitProgress("uploading", part.part_number);
+              },
+              controller,
+            );
+          } catch (error) {
+            if (error instanceof DatasetUploadPausedError) {
+              uploadedBytesByPart[partIndex] = 0;
+              await waitForResume(part.part_number);
+              continue;
+            }
+            throw error;
+          }
+        }
         uploadedBytesByPart[partIndex] = blob.size;
         completedParts.push({
           part_number: part.part_number,
@@ -98,26 +297,43 @@ export async function uploadDataset({ datasetName, file, onProgress }) {
         emitProgress("uploading", part.part_number);
       }
     }
+    await waitForResume();
     emitProgress("finalizing");
     const result = await completeDatasetUpload(
       session.upload_id,
       completedParts.sort((a, b) => a.part_number - b.part_number),
+      requestConfig,
     );
+    controller?.throwIfCancelled();
     emitProgress("completed");
     return result;
   } catch (error) {
+    const uploadError =
+      controller?.isCancelled && isAbortLikeError(error)
+        ? new DatasetUploadCancelledError()
+        : error;
     try {
-      await abortDatasetUpload(session.upload_id);
+      await abortDatasetUpload(session.upload_id, { silent: true });
     } catch {
       // ignore abort failure; the original upload error is more useful to callers
     }
-    throw error;
+    throw uploadError;
   }
 }
 
-function putOssPart(url, blob, onUploadProgress) {
+function putOssPart(url, blob, onUploadProgress, controller) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const unbindXhr = controller?.bindXhr(xhr);
+    let settled = false;
+
+    const settle = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      unbindXhr?.();
+      handler(value);
+    };
+
     xhr.open("PUT", url);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
@@ -128,15 +344,44 @@ function putOssPart(url, blob, onUploadProgress) {
       if (xhr.status >= 200 && xhr.status < 300) {
         const etag = (xhr.getResponseHeader("ETag") || "").replace(/^"|"$/g, "");
         if (!etag) {
-          reject(new Error("OSS 未返回 ETag，请检查 Bucket CORS 暴露响应头配置"));
+          settle(
+            reject,
+            new Error("OSS 未返回 ETag，请检查 Bucket CORS 暴露响应头配置"),
+          );
           return;
         }
-        resolve(etag);
+        settle(resolve, etag);
         return;
       }
-      reject(new Error(`OSS 分片上传失败 (${xhr.status})`));
+      settle(reject, new Error(`OSS 分片上传失败 (${xhr.status})`));
     };
-    xhr.onerror = () => reject(new Error("OSS 分片上传网络异常"));
-    xhr.send(blob);
+    xhr.onerror = () => settle(reject, new Error("OSS 分片上传网络异常"));
+    xhr.onabort = () => {
+      if (controller?.isCancelled) {
+        settle(reject, new DatasetUploadCancelledError());
+        return;
+      }
+      if (controller?.isPaused) {
+        settle(reject, new DatasetUploadPausedError());
+        return;
+      }
+      settle(reject, new Error("OSS 分片上传已中断"));
+    };
+
+    try {
+      controller?.throwIfCancelled();
+      xhr.send(blob);
+    } catch (error) {
+      settle(reject, error);
+    }
   });
+}
+
+function isAbortLikeError(error) {
+  return (
+    error instanceof DatasetUploadCancelledError ||
+    error?.code === "ERR_CANCELED" ||
+    error?.name === "CanceledError" ||
+    error?.name === "AbortError"
+  );
 }

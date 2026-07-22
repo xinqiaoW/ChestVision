@@ -91,12 +91,15 @@
       title="上传数据集"
       width="560px"
       :close-on-click-modal="false"
+      :show-close="!uploading"
+      :before-close="beforeUploadDialogClose"
       @closed="resetUploadForm"
     >
       <el-form label-width="96px">
         <el-form-item label="数据集名称">
           <el-input
             v-model="uploadForm.datasetName"
+            :disabled="uploading"
             maxlength="64"
             show-word-limit
             placeholder="chest_xray_v2"
@@ -111,6 +114,7 @@
             :file-list="fileList"
             :on-change="onFileChange"
             :on-remove="onFileRemove"
+            :disabled="uploading"
           >
             <el-icon class="upload-icon"><UploadFilled /></el-icon>
             <div class="el-upload__text">拖入或选择 ZIP 文件</div>
@@ -120,7 +124,7 @@
       <div v-if="uploadProgress.visible" class="upload-progress">
         <el-progress
           :percentage="Math.round(uploadProgress.percent)"
-          :status="uploadProgress.percent >= 100 ? 'success' : undefined"
+          :status="uploadProgressStatus"
         />
         <div class="progress-meta">
           <span>
@@ -135,10 +139,33 @@
         </div>
       </div>
       <template #footer>
-        <el-button :disabled="uploading" @click="showUploadDialog = false">取消</el-button>
-        <el-button type="primary" :loading="uploading" @click="submitUpload">
-          分片上传
-        </el-button>
+        <div class="upload-footer">
+          <el-button
+            v-if="uploading"
+            :disabled="!canPauseUpload"
+            @click="toggleUploadPause"
+          >
+            <el-icon>
+              <VideoPlay v-if="uploadPaused" />
+              <VideoPause v-else />
+            </el-icon>
+            {{ uploadPaused ? "继续上传" : "暂停上传" }}
+          </el-button>
+          <el-button
+            :class="{ 'cancel-upload-button': uploading }"
+            :disabled="uploading ? !canCancelUpload : !canStartUpload"
+            :loading="cancelingUpload"
+            :plain="uploading"
+            :type="uploading ? 'danger' : 'primary'"
+            @click="handleUploadAction"
+          >
+            <el-icon>
+              <CircleClose v-if="uploading" />
+              <Upload v-else />
+            </el-icon>
+            {{ uploading ? "取消上传" : "分片上传" }}
+          </el-button>
+        </div>
       </template>
     </el-dialog>
   </div>
@@ -147,17 +174,22 @@
 <script setup>
 import {
   DATASET_UPLOAD_PART_SIZE,
+  DatasetUploadCancelledError,
+  createDatasetUploadController,
   deleteDataset,
   getDatasets,
   uploadDataset,
 } from "@/api/dataset";
 import {
+  CircleClose,
   Delete,
   FolderOpened,
   Refresh,
   Search,
   Upload,
   UploadFilled,
+  VideoPause,
+  VideoPlay,
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, ref } from "vue";
@@ -167,12 +199,16 @@ const keyword = ref("");
 const loading = ref(false);
 const showUploadDialog = ref(false);
 const uploading = ref(false);
+const cancelingUpload = ref(false);
+const uploadPaused = ref(false);
 const uploadForm = ref({
   datasetName: "",
 });
 const selectedFile = ref(null);
 const fileList = ref([]);
 const uploadProgress = ref(createUploadProgress());
+let uploadController = null;
+let unsubscribeUploadController = null;
 
 const filteredDatasets = computed(() => {
   const text = keyword.value.trim().toLowerCase();
@@ -186,6 +222,38 @@ const readyDatasets = computed(() =>
   datasetList.value.filter((item) => ["UPLOADED", "READY"].includes(item.status))
     .length,
 );
+
+const canStartUpload = computed(
+  () => Boolean(uploadForm.value.datasetName.trim()) && Boolean(selectedFile.value),
+);
+
+const canPauseUpload = computed(
+  () =>
+    uploading.value &&
+    !cancelingUpload.value &&
+    !["finalizing", "completed", "cancelling", "cancelled"].includes(
+      uploadProgress.value.phase,
+    ),
+);
+
+const canCancelUpload = computed(
+  () =>
+    uploading.value &&
+    !cancelingUpload.value &&
+    !["finalizing", "completed", "cancelling", "cancelled"].includes(
+      uploadProgress.value.phase,
+    ),
+);
+
+const uploadProgressStatus = computed(() => {
+  if (["cancelling", "cancelled"].includes(uploadProgress.value.phase)) {
+    return "exception";
+  }
+  if (uploadProgress.value.phase === "paused") {
+    return "warning";
+  }
+  return uploadProgress.value.percent >= 100 ? "success" : undefined;
+});
 
 async function fetchDatasets() {
   loading.value = true;
@@ -224,6 +292,61 @@ function resetUploadForm() {
   selectedFile.value = null;
   fileList.value = [];
   uploadProgress.value = createUploadProgress();
+  uploadPaused.value = false;
+  cancelingUpload.value = false;
+}
+
+function beforeUploadDialogClose(done) {
+  if (uploading.value && uploadProgress.value.phase !== "completed") {
+    ElMessage.warning("上传进行中，请先取消上传");
+    return;
+  }
+  done();
+}
+
+function handleUploadAction() {
+  if (uploading.value) {
+    cancelUpload();
+    return;
+  }
+  submitUpload();
+}
+
+function bindUploadController(controller) {
+  unsubscribeUploadController?.();
+  uploadController = controller;
+  unsubscribeUploadController = controller.onStateChange((state) => {
+    uploadPaused.value = state.paused;
+  });
+}
+
+function clearUploadController() {
+  unsubscribeUploadController?.();
+  unsubscribeUploadController = null;
+  uploadController = null;
+  uploadPaused.value = false;
+  cancelingUpload.value = false;
+}
+
+function toggleUploadPause() {
+  if (!uploadController || cancelingUpload.value) return;
+  if (uploadPaused.value) {
+    uploadController.resume();
+    return;
+  }
+  uploadController.pause();
+}
+
+function cancelUpload() {
+  if (!uploadController || cancelingUpload.value) return;
+  cancelingUpload.value = true;
+  uploadProgress.value = {
+    ...uploadProgress.value,
+    visible: true,
+    phase: "cancelling",
+    remainingSeconds: null,
+  };
+  uploadController.cancel();
 }
 
 async function submitUpload() {
@@ -237,21 +360,37 @@ async function submitUpload() {
     return;
   }
 
+  const controller = createDatasetUploadController();
+  bindUploadController(controller);
   uploading.value = true;
+  cancelingUpload.value = false;
   uploadProgress.value = createUploadProgress(true);
   try {
     await uploadDataset({
       datasetName,
       file: selectedFile.value,
       onProgress: updateUploadProgress,
+      controller,
     });
     ElMessage.success("数据集上传成功");
     showUploadDialog.value = false;
     await fetchDatasets();
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || "上传失败");
+    if (e instanceof DatasetUploadCancelledError || e?.code === "UPLOAD_CANCELLED") {
+      uploadProgress.value = {
+        ...uploadProgress.value,
+        visible: true,
+        phase: "cancelled",
+        remainingSeconds: null,
+      };
+      ElMessage.info("上传已取消");
+      await fetchDatasets();
+    } else {
+      ElMessage.error(e.response?.data?.detail || "上传失败");
+    }
   } finally {
     uploading.value = false;
+    clearUploadController();
   }
 }
 
@@ -447,6 +586,26 @@ onMounted(fetchDatasets);
   margin-top: 4px;
 }
 
+.upload-footer {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.cancel-upload-button {
+  background: #fff;
+  border-color: #f56c6c;
+  color: #f56c6c;
+}
+
+.cancel-upload-button:hover,
+.cancel-upload-button:focus {
+  background: #fef0f0;
+  border-color: #f56c6c;
+  color: #f56c6c;
+}
+
 @media (max-width: 768px) {
   .page-header,
   .card-header {
@@ -461,6 +620,11 @@ onMounted(fetchDatasets);
 
   .header-actions .el-button {
     flex: 1;
+  }
+
+  .upload-footer {
+    align-items: stretch;
+    flex-direction: column;
   }
 
 }

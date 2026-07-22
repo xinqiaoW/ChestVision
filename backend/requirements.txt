@@ -28,6 +28,11 @@ alembic==1.13.0  # Alembic 数据库迁移框架
 redis==5.0.0
 # ── 对象存储（MinIO）─────────────────────────────────
 minio==7.2.0 # 图⽚/模型⽂件存储
+# ── 远程训练（阿里云 OSS + PAI-DLC）──────────────────
+oss2==2.19.1  # 阿里云 OSS SDK，远程数据集分片上传、对象校验与训练产物读取
+alibabacloud-credentials==1.0.10  # 阿里云凭证 SDK，PAI-DLC 控制面鉴权
+alibabacloud-tea-openapi==0.4.5  # 阿里云 OpenAPI SDK 基础配置
+alibabacloud-pai-dlc20201203==1.4.17  # PAI-DLC SDK，提交/查询/停止远程训练任务
 # ── 认证安全 ─────────────────────────────────────────
 python-jose[cryptography]==3.3.0 #JWT ⽤户认证
 passlib[bcrypt]==1.7.4 #密码哈希加密
