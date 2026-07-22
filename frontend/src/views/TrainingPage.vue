@@ -258,7 +258,7 @@
         </el-form-item>
         <el-form-item label="检测场景">
           <el-select v-model="trainForm.scene_id" placeholder="选择场景">
-            <el-option label="胸片X光病灶检测" :value="1" />
+            <el-option label="按数据集自动匹配/创建" :value="null" />
           </el-select>
         </el-form-item>
         <el-form-item label="基础模型">
@@ -488,7 +488,7 @@ const predictResult = ref(null);
 let predictFile = null;
 
 const trainForm = ref({
-  scene_id: 3,
+  scene_id: null,
   dataset_name: "chest_xray",
   model_name: "yolo11n",
   epochs: 50,

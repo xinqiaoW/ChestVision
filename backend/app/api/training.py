@@ -16,6 +16,7 @@
 
 import base64
 import os
+import shutil
 import tempfile
 
 import cv2
@@ -39,6 +40,41 @@ from sqlalchemy.orm import Session
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/training", tags=["模型训练"])
+
+
+def _load_dataset_class_metadata(data_yaml: str) -> tuple[list[str], dict[str, str]]:
+    """Read class metadata from a YOLO data.yaml file.
+
+    Custom scenes created from uploaded datasets must satisfy the non-null
+    detection_scenes.class_names constraint. If parsing fails, keep a minimal
+    placeholder so training startup can still produce a valid scene row.
+    """
+    default_names = ["class_0"]
+    try:
+        import yaml
+
+        with open(data_yaml, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        raw_names = config.get("names")
+        if isinstance(raw_names, dict):
+            items = sorted(raw_names.items(), key=lambda item: int(item[0]))
+            class_names = [str(value) for _, value in items if str(value)]
+        elif isinstance(raw_names, list):
+            class_names = [str(value) for value in raw_names if str(value)]
+        else:
+            nc = int(config.get("nc") or 0)
+            class_names = [f"class_{idx}" for idx in range(nc)]
+        if not class_names:
+            class_names = default_names
+    except Exception as e:
+        logger.warning("读取数据集类别失败: %s", str(e), exc_info=True)
+        class_names = default_names
+
+    class_names_cn = {
+        name: f"类别{idx}" if name == f"class_{idx}" else name
+        for idx, name in enumerate(class_names)
+    }
+    return class_names, class_names_cn
 
 
 @router.post("/start")
@@ -91,12 +127,15 @@ async def start_training(
             if not os.path.exists(dataset_yaml):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"数据集不存在：datasets/{scene_name}/yolo_dataset/，请先上传数据集",
+                    detail="数据集不存在或未完成初始化，请先上传数据集",
                 )
+            class_names, class_names_cn = _load_dataset_class_metadata(dataset_yaml)
             scene = DetectionScene(
                 name=scene_name,
                 display_name=scene_name,
                 category="custom",
+                class_names=class_names,
+                class_names_cn=class_names_cn,
                 is_active=True,
                 created_by=current_user.id,
             )
@@ -116,7 +155,7 @@ async def start_training(
     if os.path.exists(data_yaml):
         config["data_yaml"] = data_yaml
     else:
-        raise HTTPException(status_code=400, detail=f"data.yaml 不存在：{data_yaml}")
+        raise HTTPException(status_code=400, detail="数据集配置文件不存在")
 
     try:
         task = training_service.start_training(
@@ -127,7 +166,7 @@ async def start_training(
         )
     except Exception as e:
         logger.error("启动训练失败：%s", str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=f"启动训练失败：{str(e)}")
+        raise HTTPException(status_code=500, detail="启动训练失败，请联系管理员查看后端日志")
 
     logger.info(
         "用户 %s 启动训练：scene=%s, model=%s, epochs=%d",
@@ -567,10 +606,55 @@ names:
             "train_count": train_imgs,
             "val_count": val_imgs,
             "total_count": train_imgs + val_imgs,
-            "path": target_dir,
+            "path": f"datasets/{safe_name}/yolo_dataset",
         }
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="无效的 ZIP 文件")
     finally:
         if os.path.exists(tmp_zip):
             os.unlink(tmp_zip)
+
+
+@router.delete("/datasets/{dataset_name}", summary="删除训练数据集")
+async def delete_dataset(
+    dataset_name: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """删除本地 YOLO 格式训练数据集。"""
+    safe_name = "".join(c for c in dataset_name if c.isalnum() or c in "_-")
+    if not safe_name or safe_name != dataset_name:
+        raise HTTPException(
+            status_code=400, detail="数据集名称仅支持字母、数字、下划线、连字符"
+        )
+
+    from app.entity.db_models import TrainingTask
+
+    api_dir = os.path.dirname(os.path.abspath(__file__))
+    app_dir = os.path.dirname(api_dir)
+    backend_dir = os.path.dirname(app_dir)
+    dataset_root = os.path.join(backend_dir, "datasets", safe_name)
+    yolo_dir = os.path.join(dataset_root, "yolo_dataset")
+
+    if not os.path.isdir(dataset_root):
+        raise HTTPException(status_code=404, detail="数据集不存在")
+
+    running_task = (
+        db.query(TrainingTask)
+        .filter(
+            TrainingTask.dataset_path == yolo_dir,
+            TrainingTask.status.in_(["pending", "running"]),
+        )
+        .first()
+    )
+    if running_task:
+        raise HTTPException(status_code=400, detail="数据集正在被训练任务使用，无法删除")
+
+    try:
+        shutil.rmtree(dataset_root)
+    except Exception as e:
+        logger.error("删除数据集失败: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail="删除数据集失败，请联系管理员查看后端日志")
+
+    logger.info("用户 %s 删除数据集: %s", current_user.username, safe_name)
+    return {"dataset_name": safe_name, "message": "数据集已删除"}

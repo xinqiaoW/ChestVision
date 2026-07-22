@@ -516,7 +516,7 @@ class DetectionAgent:
             }
         except Exception as e:
             logger.error("Agent 执行异常: %s", str(e), exc_info=True)
-            return {"output": f"抱歉，处理出错：{str(e)}", "intermediate_steps": []}
+            return {"output": "抱歉，处理失败，请稍后重试", "intermediate_steps": []}
 
     async def chat_stream(
         self,
@@ -569,7 +569,7 @@ class DetectionAgent:
                         DetectionAgent._last_result = None
         except Exception as e:
             logger.error("Agent 流式异常: %s", str(e), exc_info=True)
-            yield {"type": "error", "content": f"处理出错：{str(e)}"}
+            yield {"type": "error", "content": "处理失败，请稍后重试"}
 
 
 detection_agent = DetectionAgent()

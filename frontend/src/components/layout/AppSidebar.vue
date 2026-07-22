@@ -49,6 +49,7 @@ import {
   Cpu,
   DataAnalysis,
   Document,
+  FolderOpened,
   User,
 } from "@element-plus/icons-vue";
 import { computed, ref } from "vue";
@@ -98,6 +99,12 @@ const allMenuItems = [
     roles: ["admin", "doctor"],
   },
   { path: "/training", title: "模型训练", icon: Cpu, roles: ["admin"] },
+  {
+    path: "/datasets",
+    title: "数据集管理",
+    icon: FolderOpened,
+    roles: ["admin"],
+  },
 ];
 
 const menuItems = computed(() =>

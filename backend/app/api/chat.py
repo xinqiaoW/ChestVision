@@ -240,7 +240,8 @@ async def chat_stream(
         except Exception as e:
             logger.error("SSE 异常: %s", str(e), exc_info=True)
             error_data = json.dumps(
-                {"type": "error", "content": str(e)}, ensure_ascii=False
+                {"type": "error", "content": "对话处理失败，请稍后重试"},
+                ensure_ascii=False,
             )
             yield f"data: {error_data}\n\n"
 

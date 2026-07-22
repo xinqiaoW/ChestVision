@@ -11,9 +11,15 @@ from app.api.report import router as report_router
 from app.api.training import router as training_router  # 训练 API 路由
 from app.config.settings import settings
 from app.core.exceptions import register_exception_handlers
+from app.core.logger import get_logger
 from app.middleware.request_logger import RequestLogMiddleware
+from app.train.remote_train_config import check_remote_train_environment
+from app.train.remote_train_router import router as remote_training_router
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+
+logger = get_logger(__name__)
 
 
 def init_minio():
@@ -27,11 +33,40 @@ def init_minio():
         print(f"MinIO 初始化失败: {e}")
 
 
+def check_startup_environment() -> None:
+    """启动时检查远程训练本地配置。
+
+    这里只检查环境变量或 .env 是否填写，不访问 OSS/PAI-DLC 网络。
+    缺失时只写 WARNING 日志，不阻止主服务启动；接口调用时仍会做强校验。
+    """
+    result = check_remote_train_environment()
+    if result["ready"]:
+        logger.info("远程训练环境变量检查通过")
+        return
+
+    if result["oss_missing"]:
+        logger.warning(
+            "远程训练 OSS 环境变量未配置完整: %s",
+            ", ".join(result["oss_missing"]),
+        )
+    if result["pai_missing"]:
+        logger.warning(
+            "远程训练 PAI-DLC 环境变量未配置完整: %s",
+            ", ".join(result["pai_missing"]),
+        )
+    if result["callback_missing"]:
+        logger.warning(
+            "远程训练内部回调环境变量未配置完整: %s",
+            ", ".join(result["callback_missing"]),
+        )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
     print("正在初始化服务...")
+    check_startup_environment()
     init_minio()
     yield
     # 关闭时执行（如果需要）
@@ -69,6 +104,7 @@ app.add_middleware(RequestLogMiddleware)
 app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(training_router)  # 注册训练 API 路由
+app.include_router(remote_training_router)  # 注册生产远程训练 API 路由
 app.include_router(detection_router)  # 注册检测 API 路由
 app.include_router(chat_router)  # 注册对话 API 路由
 app.include_router(patient_router)  # 注册患者管理 API 路由

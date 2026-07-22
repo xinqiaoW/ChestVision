@@ -45,6 +45,12 @@ const routes = [
         meta: { title: "模型训练", icon: "Cpu" },
       },
       {
+        path: "datasets",
+        name: "Datasets",
+        component: () => import("@/views/DatasetPage.vue"),
+        meta: { title: "数据集管理", icon: "FolderOpened" },
+      },
+      {
         path: "history",
         name: "History",
         component: () => import("@/views/HistoryPage.vue"),

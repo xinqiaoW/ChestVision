@@ -182,13 +182,14 @@ class TrainingService:
             logger.info("训练完成：task_id=%d", task_id)
 
         except FileNotFoundError as e:
+            logger.error("训练文件缺失：%s", str(e), exc_info=True)
             task.status = "failed"
-            task.error_message = str(e)
+            task.error_message = "训练所需文件不存在，请检查数据集和模型配置"
             db.commit()
         except Exception as e:
             logger.error("训练异常：%s", str(e), exc_info=True)
             task.status = "failed"
-            task.error_message = str(e)[:2000]
+            task.error_message = "训练失败，请联系管理员查看后端日志"
             db.commit()
         finally:
             try:
@@ -402,7 +403,8 @@ class TrainingService:
             "best.pt",
         )
         if not os.path.exists(weights_path):
-            return {"error": f"模型权重不存在: {weights_path}"}
+            logger.warning("模型评估失败，权重文件不存在: %s", weights_path)
+            return {"error": "模型权重不存在"}
 
         data_yaml = task.data_yaml
         if not data_yaml or not os.path.exists(data_yaml):
@@ -516,7 +518,7 @@ class TrainingService:
         except Exception as e:
             db.rollback()
             logger.error("模型评估异常: task_id=%d, error=%s", task_id, str(e), exc_info=True)
-            return {"error": f"评估失败: {str(e)}"}
+            return {"error": "评估失败，请联系管理员查看后端日志"}
         finally:
             try:
                 with open(data_yaml, "w", encoding="utf-8") as f:
@@ -551,7 +553,8 @@ class TrainingService:
             "best.pt",
         )
         if not os.path.exists(weights_path):
-            return {"error": f"模型权重不存在: {weights_path}"}
+            logger.warning("模型导出失败，权重文件不存在: %s", weights_path)
+            return {"error": "模型权重不存在"}
 
         scene = (
             db.query(DetectionScene).filter(DetectionScene.id == task.scene_id).first()
@@ -572,14 +575,16 @@ class TrainingService:
         )
         csv_path = os.path.join(task_output_dir, "results.csv")
         if not os.path.exists(csv_path):
-            return {"error": f"results.csv 不存在，无法导出模型评估指标: {csv_path}"}
+            logger.warning("模型导出失败，results.csv 不存在: %s", csv_path)
+            return {"error": "results.csv 不存在，无法导出模型评估指标"}
 
         overall = {}
         try:
             with open(csv_path, "r", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
             if not rows:
-                return {"error": f"results.csv 为空，无法导出模型评估指标: {csv_path}"}
+                logger.warning("模型导出失败，results.csv 为空: %s", csv_path)
+                return {"error": "results.csv 为空，无法导出模型评估指标"}
             last_row = {k.strip(): v.strip() for k, v in rows[-1].items()}
             overall = {
                 "precision": _safe_float(last_row.get("metrics/precision(B)", "")),
@@ -588,8 +593,8 @@ class TrainingService:
                 "map50_95": _safe_float(last_row.get("metrics/mAP50-95(B)", "")),
             }
         except Exception as e:
-            logger.warning("读取 results.csv 失败: %s", e)
-            return {"error": f"读取 results.csv 失败，无法导出模型评估指标: {str(e)}"}
+            logger.warning("读取 results.csv 失败: %s", e, exc_info=True)
+            return {"error": "读取 results.csv 失败，无法导出模型评估指标"}
 
         missing_metrics = [key for key, value in overall.items() if value is None]
         if missing_metrics:
