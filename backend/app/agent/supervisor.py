@@ -20,9 +20,10 @@ Supervisor 路由 Agent — 胸片X光多智能体系统的任务调度中心
 """
 
 import json
+import re
 from typing import Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.agent.prompts import SUPERVISOR_ROUTING_PROMPT
@@ -50,6 +51,13 @@ class SupervisorAgent:
 
     def __init__(self, llm: ChatOpenAI):
         self.llm = llm
+
+    _attachment_pattern = re.compile(
+        r"\[附件(?:图片|多张图片|视频|ZIP)路径:\s*.*?\]"
+    )
+    _server_path_pattern = re.compile(
+        r"(?:(?:/tmp|/app|/var/tmp)/[^\s`，。；、）》）\]]+)"
+    )
 
     async def route(self, state: dict) -> dict:
         """分析用户最新消息，返回路由决策
@@ -205,9 +213,24 @@ class SupervisorAgent:
 
     async def answer(self, state: dict) -> dict:
         """基于完整历史和专业 Agent 结果，由 Supervisor 统一生成最终回复。"""
-        messages = list(state.get("messages", []))
+        messages = self._sanitize_messages(list(state.get("messages", [])))
         routed_agent = state.get("routed_agent") or state.get("next_agent", "summarize")
         agent_context = self._build_agent_context(state, routed_agent)
+
+        # 已完成的检测必须依据真实结构化结果直接输出完成态，不能让模型把同步
+        # 检测误写成“正在处理”“请稍候”或编造预计耗时。
+        detection = state.get("detection_result", {}) or {}
+        if (
+            routed_agent == "detection"
+            and "error" not in detection
+            and detection.get("total_objects", -1) >= 0
+        ):
+            final_response = self._completed_detection_response(state)
+            return {
+                "final_response": final_response,
+                "knowledge_sources": state.get("knowledge_sources", []),
+                "has_knowledge": state.get("has_knowledge", False),
+            }
 
         supervisor_prompt = SystemMessage(
             content=(
@@ -217,6 +240,8 @@ class SupervisorAgent:
                 "不得以权限限制为由否认历史中已经提供的信息。\n"
                 "专业 Agent 的输出只是本轮可引用的事实和草稿，不是最终回答；请由你统一"
                 "组织语言，不要向用户提及路由、子 Agent、内部状态或服务器文件路径。"
+                "本轮专业 Agent 结果均已执行完毕，禁止使用‘正在处理’‘请稍候’‘预计几秒’"
+                "等未完成状态措辞。"
                 "若专业结果与明确的历史事实冲突，以系统身份信息、真实检测数据和数据库"
                 "上下文为准。医学结论须说明仅供辅助参考，最终诊断由临床医生结合实际判断。"
             )
@@ -235,6 +260,7 @@ class SupervisorAgent:
             final_response = (
                 response.content if hasattr(response, "content") else str(response)
             )
+            final_response = self._sanitize_user_visible_text(final_response)
         except Exception as e:
             logger.error("Supervisor 统一回复失败: %s", str(e), exc_info=True)
             final_response = self._fallback_response(state)
@@ -249,6 +275,78 @@ class SupervisorAgent:
             "knowledge_sources": state.get("knowledge_sources", []),
             "has_knowledge": state.get("has_knowledge", False),
         }
+
+    @classmethod
+    def _sanitize_messages(cls, messages: list) -> list:
+        """移除仅供工具使用的附件路径，避免最终回答模型看到或复述。"""
+        sanitized = []
+        for message in messages:
+            content = getattr(message, "content", "")
+            if not isinstance(content, str):
+                sanitized.append(message)
+                continue
+            clean_content = cls._attachment_pattern.sub(
+                "[本轮用户已上传胸片，检测已由专业 Agent 完成]",
+                content,
+            )
+            clean_content = cls._server_path_pattern.sub("[内部路径已隐藏]", clean_content)
+            if isinstance(message, HumanMessage):
+                sanitized.append(HumanMessage(content=clean_content))
+            elif isinstance(message, AIMessage):
+                sanitized.append(AIMessage(content=clean_content))
+            elif isinstance(message, SystemMessage):
+                sanitized.append(SystemMessage(content=clean_content))
+            else:
+                sanitized.append(message)
+        return sanitized
+
+    @classmethod
+    def _sanitize_user_visible_text(cls, text: str) -> str:
+        text = cls._attachment_pattern.sub("已上传胸片", text)
+        return cls._server_path_pattern.sub("内部路径已隐藏", text)
+
+    @classmethod
+    def _completed_detection_response(cls, state: dict) -> str:
+        """由 Supervisor 根据真实结果生成确定性的检测完成回复。"""
+        detection = state.get("detection_result", {}) or {}
+        diagnosis = state.get("diagnosis_result", {}) or {}
+        total = detection.get("total_objects", 0)
+        class_counts = detection.get("class_counts", {}) or {}
+        inference_time = detection.get("inference_time", 0) or 0
+
+        if total > 0:
+            lesion_summary = "、".join(
+                f"{name}×{count}" for name, count in sorted(class_counts.items())
+            ) or "详见检测结果卡片"
+            response = (
+                f"## 🔬 胸片检测完成\n\n"
+                f"共检出 **{total}** 个病灶：{lesion_summary}。\n\n"
+                f"推理耗时：{inference_time:.0f} ms。"
+            )
+        else:
+            response = (
+                "## ✅ 胸片检测完成\n\n"
+                f"本次未检出明显病灶。推理耗时：{inference_time:.0f} ms。"
+            )
+
+        findings = diagnosis.get("findings", "")
+        if findings:
+            risk_labels = {
+                "critical": "极高风险",
+                "high": "高风险",
+                "medium": "中风险",
+                "low": "低风险",
+                "none": "未见明显风险",
+            }
+            risk = risk_labels.get(
+                diagnosis.get("risk_level", ""), diagnosis.get("risk_level", "")
+            )
+            response += f"\n\n## 📋 AI 辅助分析\n\n{findings}"
+            if risk:
+                response += f"\n\n**风险评级：{risk}**"
+
+        response += "\n\n> ⚠️ 本结果仅供辅助参考，最终诊断请由临床医生结合实际情况判断。"
+        return cls._sanitize_user_visible_text(response)
 
     @staticmethod
     def _build_agent_context(state: dict, routed_agent: str) -> str:
