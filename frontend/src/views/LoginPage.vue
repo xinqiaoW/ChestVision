@@ -47,7 +47,7 @@
             <el-form-item prop="username"
               ><el-input
                 v-model="loginForm.username"
-                placeholder="邮箱 / 工号"
+                placeholder="用户名"
                 prefix-icon="User"
             /></el-form-item>
             <el-form-item prop="password"
