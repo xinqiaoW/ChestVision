@@ -6,7 +6,7 @@ Multi-Agent 状态定义 — 胸片X光智能分析系统
 Agent 协作流程：
   用户请求 → Supervisor 路由 → Detection/Diagnosis/Report/QA Agent
                                   ↓
-                            Summarize 汇总输出
+                      Supervisor 统一回答
 """
 
 from typing import Annotated, Any, Optional, TypedDict
@@ -30,9 +30,13 @@ class MultiAgentState(TypedDict):
        - "detection"  → 病灶检测 Agent
        - "diagnosis"   → 综合诊断 Agent
        - "report"      → 报告生成 Agent
+       - "case_analysis" → 历史病例分析 Agent
        - "qa"          → 医学知识问答 Agent
        - "summarize"   → 汇总输出
        - "FINISH"      → 结束"""
+
+    routed_agent: str
+    """Supervisor 为本轮选择的专业 Agent；最终回答阶段仍保留该值。"""
 
     # ── 各 Agent 产出 ──
     detection_result: dict
@@ -48,6 +52,9 @@ class MultiAgentState(TypedDict):
 
     qa_result: str
     """知识问答 Agent 产出：基于 RAG 的知识回答"""
+
+    case_analysis_result: dict
+    """历史病例分析 Agent 产出：授权病例、检测历史及诊疗计划框架"""
 
     # ── 汇总输出 ──
     final_response: str

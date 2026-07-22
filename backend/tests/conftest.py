@@ -10,6 +10,7 @@ conftest.py 中的 fixtures 对所有测试文件可用，无需显式导入。
 """
 
 import pytest
+from app.config.settings import settings
 from app.database.session import Base, get_db
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -81,6 +82,12 @@ def client():
             assert response.status_code == 200
     """
     return TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def disable_email_verification_by_default(monkeypatch):
+    """旧接口测试不发送真实邮件；验证码专项测试会显式重新启用。"""
+    monkeypatch.setattr(settings, "EMAIL_VERIFICATION_REQUIRED", False)
 
 
 @pytest.fixture

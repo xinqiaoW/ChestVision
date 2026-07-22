@@ -152,6 +152,27 @@ class RedisClient:
             if key in self._memory_cache:
                 self._memory_expire[key] = time.time() + seconds
 
+    def increment(self, key: str, expire: int | None = None) -> int:
+        """原子计数；首次计数时设置 TTL，Redis 不可用则使用进程内计数。"""
+        if self._client:
+            try:
+                value = int(self._client.incr(key))
+                if value == 1 and expire:
+                    self._client.expire(key, expire)
+                return value
+            except Exception:
+                pass
+
+        with self._lock:
+            self._clean_expired()
+            value = int(self._memory_cache.get(key, 0)) + 1
+            self._memory_cache[key] = value
+            if value == 1:
+                self._memory_expire[key] = (
+                    time.time() + expire if expire else None
+                )
+            return value
+
 
 # 全局单例
 redis_client = RedisClient()

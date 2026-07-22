@@ -1,6 +1,11 @@
 <template>
   <div class="detection-page">
-    <h2>🧠 胸片病灶检测</h2>
+    <div class="page-header">
+      <div>
+        <h2>检测工作台</h2>
+        <span class="page-subtitle">Detection</span>
+      </div>
+    </div>
 
     <div class="detection-layout">
       <!-- 左侧：上传区 -->
@@ -59,6 +64,28 @@
                   :key="m.id"
                   :label="`${m.model_name} (mAP50: ${m.map50 ? (m.map50 * 100).toFixed(1) + '%' : '-'})${m.is_default ? ' ★' : ''}`"
                   :value="m.id"
+                />
+              </el-select>
+            </div>
+            <div
+              v-if="
+                userStore.userType === 'doctor' ||
+                userStore.userType === 'admin'
+              "
+              class="param-item"
+            >
+              <span>关联患者（用于病史分析与医生匹配）</span>
+              <el-select
+                v-model="selectedPatientId"
+                placeholder="选择患者（可选）"
+                style="width: 100%"
+                clearable
+              >
+                <el-option
+                  v-for="patient in patientList"
+                  :key="patient.id"
+                  :label="`${patient.patient_code} ${patient.real_name || patient.username}`"
+                  :value="patient.id"
                 />
               </el-select>
             </div>
@@ -214,10 +241,21 @@
         />
       </div>
     </div>
+
+    <DoctorRecommendationDialog
+      v-model="recommendationVisible"
+      :task-id="recommendationTaskId"
+      :patient-profile-id="selectedPatientId"
+      :session-id="agentStore.currentSessionId"
+    />
   </div>
 </template>
 
 <script setup>
+import { getPatients } from "@/api/patient";
+import DoctorRecommendationDialog from "@/components/DoctorRecommendationDialog.vue";
+import { useAgentStore } from "@/stores/agent";
+import { useUserStore } from "@/stores/user";
 import { Loading, UploadFilled } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { onMounted, ref } from "vue";
@@ -235,6 +273,12 @@ const detecting = ref(false);
 // ── 模型选择 ──
 const modelList = ref([]);
 const selectedModelId = ref(null);
+const selectedPatientId = ref(null);
+const patientList = ref([]);
+const recommendationVisible = ref(false);
+const recommendationTaskId = ref(null);
+const userStore = useUserStore();
+const agentStore = useAgentStore();
 
 // ── 检测结果 ──
 const detectResult = ref(null);
@@ -338,12 +382,24 @@ async function fetchModels() {
       selectedModelId.value = defaultModel.id;
     }
   } catch {
-    /* 模型列表加载失败不影响检测 */
+    ElMessage.warning("模型列表加载失败，将使用默认模型");
+  }
+}
+
+async function fetchPatients() {
+  if (userStore.userType !== "doctor" && userStore.userType !== "admin") return;
+  try {
+    const result = await getPatients();
+    patientList.value = result.items || [];
+  } catch {
+    patientList.value = [];
+    ElMessage.warning("患者列表加载失败");
   }
 }
 
 onMounted(() => {
   fetchModels();
+  fetchPatients();
 });
 
 // ── 开始检测 ──
@@ -363,6 +419,9 @@ async function startDetect() {
     if (selectedModelId.value) {
       params.model_version_id = selectedModelId.value;
     }
+    if (selectedPatientId.value) {
+      params.patient_profile_id = selectedPatientId.value;
+    }
     const res = await request.post("/detection/detect", formData, {
       headers: { "Content-Type": "multipart/form-data" },
       params,
@@ -378,11 +437,12 @@ async function startDetect() {
 
     if (res.total_objects > 0) {
       ElMessage.success(`检测完成，发现 ${res.total_objects} 个病灶`);
+      recommendationTaskId.value = res.task_id;
+      recommendationVisible.value = true;
     } else {
       ElMessage.success("检测完成，未发现明显病灶");
     }
   } catch (err) {
-    console.error("检测失败:", err);
     ElMessage.error(err.response?.data?.detail || "检测请求失败");
   } finally {
     detecting.value = false;
@@ -400,13 +460,12 @@ async function loadAnnotatedImage(url) {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
-      console.warn("标注图加载失败:", response.status);
       return;
     }
     const blob = await response.blob();
     annotatedImageUrl.value = URL.createObjectURL(blob);
-  } catch (e) {
-    console.warn("标注图加载异常:", e);
+  } catch {
+    /* 标注图非关键，静默失败 */
   }
 }
 

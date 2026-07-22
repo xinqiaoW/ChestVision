@@ -12,12 +12,14 @@ Multi-Agent 节点实现 — 胸片X光智能分析系统
 """
 
 import json
+import re
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.agent.prompts import (
+    CASE_HISTORY_ANALYSIS_PROMPT,
     CHESTX_DIAGNOSIS_PROMPT,
     CHESTX_QA_PROMPT,
     CHESTX_REPORT_PROMPT,
@@ -27,9 +29,121 @@ from app.agent.tools.detection_tool import (
     clear_last_result,
     get_last_result,
 )
+from app.config.settings import settings
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# ══════════════════════════════════════════════════════════════
+# 病灶英文→中文名称映射 & 临床紧急程度权重
+# ══════════════════════════════════════════════════════════════
+
+LESION_CN_MAP: dict[str, str] = {
+    "Atelectasis": "肺不张",
+    "Calcification": "钙化",
+    "Consolidation": "实变",
+    "Effusion": "胸腔积液",
+    "Emphysema": "肺气肿",
+    "Fibrosis": "纤维化",
+    "Fracture": "骨折",
+    "Mass": "肿块",
+    "Nodule": "结节",
+    "Pneumothorax": "气胸",
+}
+
+# 临床紧急程度权重（值越大越紧急）
+LESION_URGENCY: dict[str, int] = {
+    "Pneumothorax": 100,   # 气胸 — 最紧急
+    "Effusion": 90,        # 胸腔积液
+    "Mass": 80,            # 肿块 — 高恶性风险
+    "Fracture": 70,        # 骨折
+    "Nodule": 60,          # 结节
+    "Consolidation": 50,   # 实变
+    "Atelectasis": 40,     # 肺不张
+    "Fibrosis": 30,        # 纤维化
+    "Emphysema": 20,       # 肺气肿
+    "Calcification": 10,   # 钙化 — 通常良性
+}
+
+# 统一 RAG 相似度阈值
+RAG_THRESHOLD = settings.RAG_SIMILARITY_THRESHOLD
+
+
+def _pick_primary_lesion(class_counts: dict[str, int]) -> str | None:
+    """按临床紧急程度选择最关键的病灶类型进行 RAG 检索
+
+    优先选择紧急程度高且数量>0的病灶。同紧急程度时选数量多的。
+    """
+    if not class_counts:
+        return None
+    # 按 (紧急权重, 数量) 降序排列
+    sorted_lesions = sorted(
+        class_counts.items(),
+        key=lambda kv: (LESION_URGENCY.get(kv[0], 0), kv[1]),
+        reverse=True,
+    )
+    return sorted_lesions[0][0]
+
+
+def _load_detection_from_db(state: dict) -> dict | None:
+    """从数据库加载用户最近一次完成的检测结果（跨轮次兜底）
+
+    当 state 中没有 detection_result 但用户消息明显在引用历史检测时，
+    diagnosis_node 和 summarize_node 可调用此函数从 DB 恢复数据。
+    """
+    user_id = state.get("user_id", 0)
+    task_id = state.get("task_id")
+    if not user_id:
+        return None
+
+    try:
+        from app.database.session import SessionLocal
+        from app.entity.db_models import DetectionResult, DetectionTask
+
+        db = SessionLocal()
+        try:
+            query = db.query(DetectionTask).filter(
+                DetectionTask.user_id == user_id,
+                DetectionTask.status == "completed",
+            )
+            if task_id:
+                query = query.filter(DetectionTask.id == task_id)
+            last_task = query.order_by(DetectionTask.created_at.desc()).first()
+
+            # 未检出病灶也是有效的已完成检测，同样可生成报告。
+            if not last_task:
+                return None
+
+            details = (
+                db.query(DetectionResult)
+                .filter(DetectionResult.task_id == last_task.id)
+                .all()
+            )
+            class_counts: dict[str, int] = {}
+            detections_list: list[dict] = []
+            for r in details:
+                cls_name = r.class_name or "Unknown"
+                class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+                detections_list.append({
+                    "class_name": cls_name,
+                    "class_name_cn": r.class_name_cn or cls_name,
+                    "confidence": r.confidence or 0,
+                })
+
+            return {
+                "total_objects": last_task.total_objects,
+                "class_counts": class_counts,
+                "inference_time": last_task.total_inference_time or 0,
+                "status": "completed",
+                "task_id": last_task.id,
+                "detections": detections_list,
+                "risk_level": last_task.risk_level or "unknown",
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("从DB加载检测结果失败: %s", str(e))
+        return None
 
 # ══════════════════════════════════════════════════════════════
 # 辅助函数
@@ -135,16 +249,19 @@ def _get_patient_context(state: dict, db_session=None) -> str:
 async def detection_node(state: dict, llm: ChatOpenAI = None) -> dict:
     """病灶检测 Agent 节点
 
-    职责：调用 YOLO 模型对上传的胸片进行病灶检测。
+    职责：调用 YOLO 模型对上传的胸片进行病灶检测，并持久化到数据库。
 
     流程：
       1. 从消息中提取图片路径
       2. 调用 detect_single_image / detect_batch_images 工具
-      3. 返回检测摘要
+      3. 持久化检测任务到 DB
+      4. 返回检测摘要
     """
     user_msg = _get_user_message(state)
     detection_result = {}
     task_id = None
+    user_id = state.get("user_id", 0)
+    patient_profile_id = state.get("patient_profile_id")
 
     # ── 提取图片路径 ──
     image_path = state.get("image_path", "")
@@ -185,12 +302,23 @@ async def detection_node(state: dict, llm: ChatOpenAI = None) -> dict:
             # 获取完整结果（含标注图）
             full_result = get_last_result()
             if full_result:
-                detection_result["annotated_image_url"] = full_result.get(
-                    "annotated_image_url", ""
+                detection_result["annotated_image_base64"] = full_result.get(
+                    "annotated_image_base64", ""
                 )
-                detection_result["task_id"] = full_result.get("task_id")
-                task_id = full_result.get("task_id")
                 detection_result["detections"] = full_result.get("detections", [])
+
+                # ── 持久化检测任务到数据库 ──
+                task_id = _persist_detection_task(
+                    user_id=user_id,
+                    patient_profile_id=patient_profile_id,
+                    image_path=image_path,
+                    detection_result=full_result,
+                )
+                detection_result["task_id"] = task_id
+                if task_id:
+                    detection_result["annotated_image_url"] = (
+                        f"/api/detection/image/{task_id}"
+                    )
 
         clear_last_result()
 
@@ -210,6 +338,128 @@ async def detection_node(state: dict, llm: ChatOpenAI = None) -> dict:
     }
 
 
+def _persist_detection_task(
+    user_id: int,
+    patient_profile_id: Any,
+    image_path: str,
+    detection_result: dict,
+):
+    """将检测结果持久化到数据库"""
+    try:
+        from datetime import datetime
+
+        from app.database.session import SessionLocal
+        from app.entity.db_models import (
+            DetectionResult,
+            DetectionScene,
+            DetectionTask,
+            ModelVersion,
+            PatientProfile,
+        )
+
+        db = SessionLocal()
+        try:
+            # 验证 patient_profile_id
+            profile_id = None
+            if patient_profile_id:
+                profile = db.query(PatientProfile).filter(
+                    PatientProfile.id == patient_profile_id
+                ).first()
+                if profile:
+                    profile_id = profile.id
+
+            scene = (
+                db.query(DetectionScene)
+                .filter(DetectionScene.name == "chest_xray")
+                .first()
+            )
+            if not scene:
+                logger.warning("检测场景 chest_xray 不存在，跳过检测任务入库")
+                return None
+
+            model_version = (
+                db.query(ModelVersion)
+                .filter(
+                    ModelVersion.scene_id == scene.id,
+                    ModelVersion.is_default == True,  # noqa: E712
+                )
+                .first()
+            )
+            if not model_version:
+                model_version = (
+                    db.query(ModelVersion)
+                    .filter(ModelVersion.scene_id == scene.id)
+                    .order_by(ModelVersion.created_at.desc())
+                    .first()
+                )
+
+            task = DetectionTask(
+                user_id=user_id,
+                scene_id=scene.id,
+                model_version_id=model_version.id if model_version else None,
+                patient_profile_id=profile_id,
+                task_type="single",
+                status="completed",
+                total_images=1,
+                total_objects=detection_result.get("total_objects", 0),
+                total_inference_time=detection_result.get("inference_time", 0),
+                risk_level=_estimate_risk_level(detection_result),
+                conf_threshold=0.25,
+                iou_threshold=0.45,
+                completed_at=datetime.now(),
+            )
+            db.add(task)
+            db.flush()
+
+            for detected_object in detection_result.get("detections", []):
+                db.add(
+                    DetectionResult(
+                        task_id=task.id,
+                        image_path=image_path,
+                        annotated_image_url=detection_result.get(
+                            "annotated_image_path"
+                        ),
+                        class_name=detected_object.get("class_name", "Unknown"),
+                        class_name_cn=detected_object.get("class_name_cn"),
+                        class_id=detected_object.get("class_id", -1),
+                        confidence=detected_object.get("confidence", 0),
+                        bbox=detected_object.get("bbox", []),
+                        inference_time=detection_result.get("inference_time", 0),
+                    )
+                )
+
+            db.commit()
+            db.refresh(task)
+            logger.info("检测任务已入库: task_id=%d, user=%d", task.id, user_id)
+            return task.id
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("检测任务入库失败（不影响主流程）: %s", str(e))
+        return None
+
+
+def _estimate_risk_level(detection_result: dict) -> str:
+    """根据检测结果估算风险等级"""
+    class_counts = detection_result.get("class_counts", {})
+    # 危急病灶
+    critical_types = {"Pneumothorax": "气胸", "Effusion": "胸腔积液"}
+    high_risk_types = {"Mass": "肿块", "Nodule": "结节", "Fracture": "骨折"}
+
+    for ct in critical_types:
+        if class_counts.get(ct, 0) > 0:
+            return "critical"
+    for ht in high_risk_types:
+        if class_counts.get(ht, 0) > 0:
+            return "high"
+    total = detection_result.get("total_objects", 0)
+    if total > 3:
+        return "medium"
+    if total > 0:
+        return "low"
+    return "none"
+
+
 # ══════════════════════════════════════════════════════════════
 # 2. 综合诊断 Agent 节点
 # ══════════════════════════════════════════════════════════════
@@ -218,30 +468,63 @@ async def detection_node(state: dict, llm: ChatOpenAI = None) -> dict:
 async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
     """综合诊断 Agent 节点
 
-    职责：结合检测结果 + 患者病史 + 医学知识，给出综合诊断意见。
+    职责：结合检测结果 + 患者病史 + RAG医学知识，给出综合诊断意见。
 
     分析维度：
       - 病灶特征总结
       - 结合病史的对比分析
+      - RAG知识增强鉴别诊断
       - 风险等级评估
-      - 鉴别诊断
       - 进一步检查建议
     """
     user_msg = _get_user_message(state)
     detection_result = state.get("detection_result", {})
+    knowledge_context = ""
 
     # ── 构建诊断上下文 ──
+    # ⭐ 关键修复：detection_result 为空时，尝试从 DB 加载历史检测结果
     if not detection_result or detection_result.get("total_objects", -1) < 0:
-        return {
-            "diagnosis_result": {
-                "findings": "尚未进行胸片检测，请先上传胸片进行病灶检测。",
-                "risk_level": "unknown",
-            },
-            "next_agent": "summarize",
-        }
+        db_detection = _load_detection_from_db(state)
+        if db_detection:
+            detection_result = db_detection
+            logger.info(
+                "诊断节点从DB加载历史检测: total=%d, classes=%s",
+                detection_result.get("total_objects", 0),
+                detection_result.get("class_counts", {}),
+            )
+        else:
+            return {
+                "diagnosis_result": {
+                    "findings": "尚未进行胸片检测，请先上传胸片进行病灶检测。",
+                    "risk_level": "unknown",
+                },
+                "next_agent": "summarize",
+            }
 
     # 患者病史上下文
     patient_context = _get_patient_context(state)
+
+    # ── RAG 知识增强 ──
+    try:
+        from app.rag.retriever import knowledge_retriever
+
+        # 根据检出的病灶类型检索相关知识（使用中文名 + 临床紧急程度排序）
+        class_counts = detection_result.get("class_counts", {})
+        primary_lesion_en = _pick_primary_lesion(class_counts)
+        if primary_lesion_en:
+            # 使用中文病灶名构建 RAG 查询，提升中文知识库检索效果
+            primary_lesion_cn = LESION_CN_MAP.get(primary_lesion_en, primary_lesion_en)
+            rag_query = f"{primary_lesion_cn} 胸部X光 影像学特征 诊断 鉴别诊断 临床建议"
+            rag_results = knowledge_retriever.search_with_threshold(
+                rag_query, top_k=3, threshold=RAG_THRESHOLD,
+            )
+            if rag_results:
+                knowledge_context = "\n\n---\n\n".join(
+                    f"[知识库: {r.get('metadata', {}).get('source', '未知')}]\n{r.get('content', '')[:400]}"
+                    for r in rag_results
+                )
+    except Exception as e:
+        logger.warning("诊断节点 RAG 检索失败: %s", str(e))
 
     # 检测结果摘要
     total = detection_result.get("total_objects", 0)
@@ -250,10 +533,14 @@ async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
         f"- {name}: {count}处" for name, count in sorted(class_counts.items())
     ) if class_counts else "无病灶检出"
 
-    # ── 构建 Prompt ──
+    # ── 构建 Prompt（注入RAG知识）──
+    detection_context = f"检出病灶总数: {total}\n病灶分布:\n{lesion_summary}"
+    if knowledge_context:
+        detection_context += f"\n\n## 相关医学知识（来自知识库）\n{knowledge_context}"
+
     diagnosis_prompt = CHESTX_DIAGNOSIS_PROMPT.format(
         patient_context=patient_context or "无历史记录",
-        detection_summary=f"检出病灶总数: {total}\n病灶分布:\n{lesion_summary}",
+        detection_summary=detection_context,
         user_question=user_msg,
     )
 
@@ -273,13 +560,25 @@ async def diagnosis_node(state: dict, llm: ChatOpenAI = None) -> dict:
         logger.error("诊断节点 LLM 调用失败: %s", str(e))
         diagnosis_text = f"诊断分析暂时不可用（{str(e)}），请稍后重试。"
 
-    # ── 简单提取风险等级 ──
+    # ── 提取风险等级（更健壮的匹配逻辑）──
     risk_level = "medium"
-    for level in ["极高风险", "高风险", "中风险", "低风险"]:
-        if level in diagnosis_text:
-            risk_map = {"极高风险": "critical", "高风险": "high", "中风险": "medium", "低风险": "low"}
-            risk_level = risk_map.get(level, "medium")
+    risk_patterns = [
+        ("极高风险", "critical"), ("critical", "critical"),
+        ("高风险", "high"), ("high", "high"),
+        ("中风险", "medium"), ("medium", "medium"),
+        ("低风险", "low"), ("low", "low"),
+        ("无风险", "none"), ("none", "none"),
+    ]
+    diagnosis_lower = diagnosis_text.lower()
+    for pattern, level in risk_patterns:
+        if pattern in diagnosis_lower:
+            risk_level = level
             break
+
+    # ── 兜底：如果 LLM 未在文本中标注风险等级，根据检测结果推断 ──
+    if risk_level == "medium" and not any(p in diagnosis_text for p in ["中风险", "medium"]):
+        risk_level = _estimate_risk_level(detection_result)
+        logger.info("诊断节点未显式标注风险，根据检测结果推断为: %s", risk_level)
 
     logger.info("诊断节点完成: risk=%s, text_len=%d", risk_level, len(diagnosis_text))
 
@@ -312,6 +611,9 @@ async def report_node(state: dict, llm: ChatOpenAI = None) -> dict:
     detection_result = state.get("detection_result", {})
     diagnosis_result = state.get("diagnosis_result", {})
     patient_context = _get_patient_context(state)
+
+    if not detection_result or detection_result.get("total_objects", -1) < 0:
+        detection_result = _load_detection_from_db(state) or {}
 
     if not detection_result or detection_result.get("total_objects", -1) < 0:
         return {
@@ -355,12 +657,318 @@ async def report_node(state: dict, llm: ChatOpenAI = None) -> dict:
 
     return {
         "report_result": report_text,
+        "task_id": detection_result.get("task_id") or state.get("task_id"),
         "next_agent": "summarize",
     }
 
 
 # ══════════════════════════════════════════════════════════════
-# 4. 知识问答 Agent 节点
+# 4. 历史病例分析 Agent 节点
+# ══════════════════════════════════════════════════════════════
+
+
+def _case_analysis_fallback(profile, records: list, tasks: list) -> str:
+    """LLM 不可用或输出越界时，基于数据库事实生成安全的计划框架。"""
+    timeline = []
+    for record in records:
+        visit_time = record.visit_date or record.created_at
+        date_text = visit_time.strftime("%Y-%m-%d") if visit_time else "日期未记录"
+        facts = [
+            f"类型：{record.record_type or '未记录'}",
+            f"主诉：{record.chief_complaint or '未记录'}",
+            f"诊断：{json.dumps(record.diagnosis, ensure_ascii=False) if record.diagnosis else '未记录'}",
+        ]
+        if record.treatment_plan:
+            facts.append(f"历史治疗方案记录：{record.treatment_plan}")
+        timeline.append(f"- {date_text}（病例 #{record.id}）：" + "；".join(facts))
+
+    detections = []
+    for task in tasks:
+        task_time = task.completed_at or task.created_at
+        date_text = task_time.strftime("%Y-%m-%d") if task_time else "日期未记录"
+        lesion_counts: dict[str, int] = {}
+        for result in task.results or []:
+            lesion = result.class_name_cn or LESION_CN_MAP.get(
+                result.class_name, result.class_name
+            )
+            lesion_counts[lesion] = lesion_counts.get(lesion, 0) + 1
+        lesion_text = "、".join(
+            f"{name}×{count}" for name, count in sorted(lesion_counts.items())
+        ) or "未记录具体病灶"
+        detections.append(
+            f"- {date_text}（检测任务 #{task.id}）：{lesion_text}；风险等级：{task.risk_level or '未记录'}"
+        )
+
+    timeline_text = "\n".join(timeline) or "- 暂无历史病例记录。"
+    detection_text = "\n".join(detections) or "- 暂无历史胸片检测记录。"
+    allergies = profile.allergies or "未记录（制定方案前需核实）"
+    return (
+        "### 病例时间线与已知事实\n"
+        f"患者编号：{profile.patient_code}；过敏史：{allergies}。\n\n"
+        f"{timeline_text}\n\n历史胸片检测：\n{detection_text}\n\n"
+        "### 趋势、风险与冲突\n"
+        "现有信息仅能用于整理既往记录；需由医生对照历次症状、影像和检查结果，判断病情变化，"
+        "并核实诊断是否重复或冲突。过敏史未记录时，不应直接形成用药决定。\n\n"
+        "### 诊疗计划框架\n"
+        "1. 先复核当前症状、生命体征和本次就诊目标；\n"
+        "2. 将当前影像与历史胸片逐次对照，确认病灶是否新增、扩大或缓解；\n"
+        "3. 复核历史方案的执行情况、疗效和不良反应；\n"
+        "4. 由临床医生结合面诊和必要检查，与患者共同确定治疗、复查和转诊安排。\n\n"
+        "### 需补充或复核的信息\n"
+        "需补充当前症状持续时间、基础疾病、完整用药与过敏史、相关化验及既往影像原片。\n\n"
+        "### 随访与危险信号\n"
+        "建议按临床医生确定的时间随访；若出现突发或加重的呼吸困难、胸痛、咯血、意识改变等，"
+        "应立即就医。\n\n"
+        "> 本分析仅供临床决策支持，具体方案由有资质医师面诊后确定。"
+    )
+
+
+async def case_analysis_node(state: dict, llm: ChatOpenAI = None) -> dict:
+    """读取当前授权患者的病例与检测历史，形成可追溯的诊疗计划参考。"""
+    from app.database.session import SessionLocal
+    from app.entity.db_models import (
+        DetectionTask,
+        DoctorPatientRelation,
+        MedicalRecord,
+        PatientProfile,
+        User,
+    )
+
+    user_id = state.get("user_id")
+    patient_profile_id = state.get("patient_profile_id")
+    user_request = _get_user_message(state)
+    db = SessionLocal()
+
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return {
+                "case_analysis_result": {
+                    "status": "error",
+                    "analysis": "当前用户不存在，无法读取病例历史。",
+                },
+                "next_agent": "summarize",
+            }
+
+        # 患者无需手动选择，自动使用自己的档案；医生和管理员必须明确选中患者。
+        if not patient_profile_id and user.user_type == "patient":
+            own_profile = (
+                db.query(PatientProfile)
+                .filter(
+                    PatientProfile.user_id == user.id,
+                    PatientProfile.is_active.is_(True),
+                )
+                .first()
+            )
+            patient_profile_id = own_profile.id if own_profile else None
+
+        if not patient_profile_id:
+            return {
+                "case_analysis_result": {
+                    "status": "patient_required",
+                    "analysis": "请先在对话页选择患者，再请求基于历史病例制定诊疗计划。",
+                },
+                "next_agent": "summarize",
+            }
+
+        profile = (
+            db.query(PatientProfile)
+            .filter(
+                PatientProfile.id == patient_profile_id,
+                PatientProfile.is_active.is_(True),
+            )
+            .first()
+        )
+        if not profile:
+            return {
+                "case_analysis_result": {
+                    "status": "not_found",
+                    "analysis": "未找到所选患者档案，请重新选择患者。",
+                },
+                "next_agent": "summarize",
+            }
+
+        authorized = user.user_type == "admin" or user.is_superuser
+        if user.user_type == "patient":
+            authorized = profile.user_id == user.id
+        elif user.user_type == "doctor" and not authorized:
+            authorized = (
+                db.query(DoctorPatientRelation.id)
+                .filter(
+                    DoctorPatientRelation.doctor_id == user.id,
+                    DoctorPatientRelation.patient_id == profile.user_id,
+                    DoctorPatientRelation.relation_status == "active",
+                )
+                .first()
+                is not None
+            )
+
+        if not authorized:
+            logger.warning(
+                "用户 %s 尝试读取未授权患者档案 %s", user.id, patient_profile_id
+            )
+            return {
+                "case_analysis_result": {
+                    "status": "forbidden",
+                    "analysis": "您无权读取该患者的历史病例，请选择已建立医患关系的患者。",
+                },
+                "next_agent": "summarize",
+            }
+
+        records = (
+            db.query(MedicalRecord)
+            .filter(MedicalRecord.patient_profile_id == profile.id)
+            .order_by(
+                MedicalRecord.visit_date.desc().nullslast(),
+                MedicalRecord.created_at.desc(),
+            )
+            .limit(8)
+            .all()
+        )
+        tasks = (
+            db.query(DetectionTask)
+            .filter(
+                DetectionTask.patient_profile_id == profile.id,
+                DetectionTask.status == "completed",
+            )
+            .order_by(
+                DetectionTask.completed_at.desc().nullslast(),
+                DetectionTask.created_at.desc(),
+            )
+            .limit(5)
+            .all()
+        )
+
+        fallback = _case_analysis_fallback(profile, records, tasks)
+        record_context = [
+            {
+                "id": record.id,
+                "visit_date": (record.visit_date or record.created_at).isoformat()
+                if (record.visit_date or record.created_at)
+                else None,
+                "record_type": record.record_type,
+                "chief_complaint": record.chief_complaint,
+                "present_illness": record.present_illness,
+                "past_history": record.past_history,
+                "family_history": record.family_history,
+                "physical_examination": record.physical_examination,
+                "auxiliary_exams": record.auxiliary_exams,
+                "diagnosis": record.diagnosis,
+                "historical_treatment_plan": record.treatment_plan,
+                "historical_prescription": record.prescription,
+                "doctor_notes": record.doctor_notes,
+                "status": record.record_status,
+            }
+            for record in records
+        ]
+        detection_context = []
+        for task in tasks:
+            detection_context.append(
+                {
+                    "task_id": task.id,
+                    "completed_at": (task.completed_at or task.created_at).isoformat()
+                    if (task.completed_at or task.created_at)
+                    else None,
+                    "total_objects": task.total_objects,
+                    "risk_level": task.risk_level,
+                    "analysis_report": task.analysis_report,
+                    "analysis_suggestion": task.analysis_suggestion,
+                    "lesions": [
+                        {
+                            "name": result.class_name_cn
+                            or LESION_CN_MAP.get(result.class_name, result.class_name),
+                            "confidence": result.confidence,
+                        }
+                        for result in (task.results or [])
+                    ],
+                }
+            )
+
+        patient_context = {
+            "patient_code": profile.patient_code,
+            "age": profile.age,
+            "gender": profile.gender,
+            "blood_type": profile.blood_type,
+            "allergies": profile.allergies,
+            "department": profile.department,
+            "notes": profile.notes,
+        }
+        prompt = CASE_HISTORY_ANALYSIS_PROMPT.format(
+            user_request=user_request,
+            patient_context=json.dumps(patient_context, ensure_ascii=False, default=str),
+            record_context=json.dumps(record_context, ensure_ascii=False, default=str),
+            detection_context=json.dumps(detection_context, ensure_ascii=False, default=str),
+        )
+
+        analysis = fallback
+        try:
+            if llm is None:
+                from app.agent.detection_agent import create_llm
+                llm = create_llm()
+            response = await llm.ainvoke(
+                [
+                    SystemMessage(
+                        content="你是历史病例分析 Agent，只能依据给定数据库记录提供临床决策支持。"
+                    ),
+                    HumanMessage(content=prompt),
+                ]
+            )
+            candidate = (
+                response.content if hasattr(response, "content") else str(response)
+            )
+            required_sections = [
+                "病例时间线与已知事实",
+                "趋势、风险与冲突",
+                "诊疗计划框架",
+                "需补充或复核的信息",
+                "随访与危险信号",
+            ]
+            contains_dose = bool(
+                re.search(
+                    r"\d+(?:\.\d+)?\s*(?:mg|ml|毫克|毫升|片|粒|次/日)",
+                    candidate,
+                    re.I,
+                )
+                or re.search(r"建议(?:使用|给予|服用)|首选.{0,12}药", candidate)
+            )
+            if (
+                len(candidate.strip()) >= 300
+                and all(section in candidate for section in required_sections)
+                and not contains_dose
+            ):
+                analysis = candidate.strip()
+            else:
+                logger.warning("历史病例分析输出未通过安全/结构校验，使用事实兜底")
+        except Exception as exc:
+            logger.error("历史病例分析 Agent 调用失败: %s", str(exc), exc_info=True)
+
+        return {
+            "case_analysis_result": {
+                "status": "completed",
+                "patient_code": profile.patient_code,
+                "record_count": len(records),
+                "detection_count": len(tasks),
+                "referenced_record_ids": [record.id for record in records],
+                "referenced_task_ids": [task.id for task in tasks],
+                "analysis": analysis,
+            },
+            "next_agent": "summarize",
+        }
+    except Exception as exc:
+        logger.error("历史病例分析节点失败: %s", str(exc), exc_info=True)
+        return {
+            "case_analysis_result": {
+                "status": "error",
+                "analysis": "历史病例读取失败，请稍后重试。",
+            },
+            "next_agent": "summarize",
+        }
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════
+# 5. 知识问答 Agent 节点
 # ══════════════════════════════════════════════════════════════
 
 
@@ -382,19 +990,19 @@ async def qa_node(state: dict, llm: ChatOpenAI = None) -> dict:
     try:
         from app.rag.retriever import knowledge_retriever
 
-        results = knowledge_retriever.search(user_msg, top_k=3)
+        results = knowledge_retriever.search_with_threshold(
+            user_msg, top_k=3, threshold=RAG_THRESHOLD,
+        )
         if results:
-            max_sim = max(r.get("similarity", 0) for r in results)
-            if max_sim >= 0.5:
-                has_knowledge = True
-                knowledge_sources = [
-                    {
-                        "source": r.get("metadata", {}).get("source", "未知"),
-                        "content": r.get("content", "")[:200],
-                        "similarity": r.get("similarity", 0),
-                    }
-                    for r in results if r.get("similarity", 0) >= 0.5
-                ]
+            has_knowledge = True
+            knowledge_sources = [
+                {
+                    "source": r.get("metadata", {}).get("source", "未知"),
+                    "content": r.get("content", "")[:300],
+                    "similarity": r.get("similarity", 0),
+                }
+                for r in results
+            ]
     except Exception as e:
         logger.warning("RAG 检索失败: %s", str(e))
 

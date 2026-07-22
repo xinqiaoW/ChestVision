@@ -8,6 +8,7 @@ import uuid
 from app.core.security import create_access_token, hash_password, verify_password
 from app.entity.db_models import PatientProfile, User
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 
@@ -44,14 +45,19 @@ class UserService:
             raise HTTPException(status_code=400, detail="用户名已存在")
 
         # 检查邮箱是否已存在
-        existing_email = db.query(User).filter(User.email == email).first()
+        normalized_email = email.strip().lower()
+        existing_email = (
+            db.query(User)
+            .filter(func.lower(User.email) == normalized_email)
+            .first()
+        )
         if existing_email:
             raise HTTPException(status_code=400, detail="邮箱已被注册")
 
         # 创建新用户
         new_user = User(
             username=username,
-            email=email,
+            email=normalized_email,
             hashed_password=hash_password(password),
             user_type=user_type,
         )

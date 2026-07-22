@@ -91,8 +91,7 @@ function processSSE(message, onMessage) {
       try {
         const parsed = JSON.parse(data);
         onMessage?.(parsed);
-        // type="done" 事件也表示流结束
-        if (parsed.type === "done") return true;
+        // 后端可能由内部 Agent 发出阶段性 done；继续读取，直到 SSE 真正结束。
       } catch {
         onMessage?.({ type: "text_chunk", content: data });
       }

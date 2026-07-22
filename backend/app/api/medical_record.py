@@ -8,6 +8,7 @@
 """
 
 import uuid
+from datetime import datetime
 
 from app.api.auth import get_current_user
 from app.database.session import get_db
@@ -24,6 +25,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/api/medical-records", tags=["病例管理"])
+
+
+def _parse_visit_date(value: str | None) -> datetime | None:
+    """把前端的日期字符串统一转换成数据库 DateTime 类型。"""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="就诊日期格式无效") from exc
 
 
 class CreateMedicalRecordRequest(BaseModel):
@@ -98,8 +109,6 @@ async def create_record(
 
     _check_permission(current_user, req.patient_profile_id, db)
 
-    from datetime import datetime as dt
-
     record = MedicalRecord(
         patient_profile_id=req.patient_profile_id,
         record_uuid=str(uuid.uuid4())[:12],
@@ -112,7 +121,7 @@ async def create_record(
         diagnosis=req.diagnosis,
         treatment_plan=req.treatment_plan,
         doctor_notes=req.doctor_notes,
-        visit_date=dt.fromisoformat(req.visit_date) if req.visit_date else None,
+        visit_date=_parse_visit_date(req.visit_date),
         created_by=current_user.id,
     )
     db.add(record)
@@ -269,6 +278,8 @@ async def update_record(
     _check_permission(current_user, record.patient_profile_id, db)
 
     update_data = req.model_dump(exclude_unset=True)
+    if "visit_date" in update_data:
+        update_data["visit_date"] = _parse_visit_date(update_data["visit_date"])
     for key, value in update_data.items():
         setattr(record, key, value)
     record.updated_by = current_user.id

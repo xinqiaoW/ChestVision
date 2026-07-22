@@ -47,3 +47,24 @@ export function uploadImageApi(file) {
     headers: { "Content-Type": "multipart/form-data" },
   });
 }
+
+/**
+ * Multi-Agent SSE 流式对话（Day 12 多智能体协作架构）
+ * 注意：此函数返回请求参数，实际 SSE 调用由 streamChat 工具处理
+ * @param {Object} params
+ * @param {string} params.message - 用户消息
+ * @param {string} [params.image_path] - 上传后的图片路径
+ * @param {number} [params.session_id] - 会话ID
+ * @param {number} [params.patient_profile_id] - 患者档案ID
+ */
+export function getMultiAgentParams(params) {
+  return {
+    url: "/api/chat/multi-agent",
+    body: {
+      message: params.message,
+      image_path: params.image_path || undefined,
+      session_id: params.session_id || undefined,
+      patient_profile_id: params.patient_profile_id || undefined,
+    },
+  };
+}

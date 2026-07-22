@@ -80,6 +80,7 @@ const previewSrc = ref("");
 const annotatedImageSrc = computed(() => {
   if (props.result.annotated_image_base64)
     return `data:image/jpeg;base64,${props.result.annotated_image_base64}`;
+  if (props.result.annotated_image_url) return props.result.annotated_image_url;
   return null;
 });
 

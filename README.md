@@ -45,6 +45,8 @@ ChestVision 是一个**医患协同的胸部 X 光 AI 辅助诊断平台**。系
 | 智能对话 | 自然语言提问，AI 实时回答（支持 SSE 流式输出） |
 | 上下文感知 | 对话自动注入患者病史，追问时 AI 结合历史信息回答 |
 | 系统查询 | 询问"有几个病人""我的病人有哪些"，AI 按权限回答 |
+| AI 医生推荐 | 结合病灶、对话身份信息、医生自述与历史记录匹配医生 |
+| 管理员审核 | 用户选择医生后进入待确认队列，管理员确认后才建立医患关系 |
 
 ### 📋 病例管理
 | 功能 | 说明 |
@@ -71,7 +73,7 @@ ChestVision 是一个**医患协同的胸部 X 光 AI 辅助诊断平台**。系
 ### 🔐 权限与安全
 | 功能 | 说明 |
 |------|------|
-| 三种用户类型 | 注册时选择 admin / doctor / patient |
+| 三种用户类型 | 公开注册仅允许 doctor / patient；admin 由系统初始化或管理员创建 |
 | RBAC 权限 | 角色-权限精细化控制 |
 | 医患关系 | 管理员分配病人给医生，数据按权限隔离 |
 | 侧边栏差异化 | 不同角色看到不同菜单 |
@@ -93,11 +95,11 @@ AI      YOLOv11 (Ultralytics) + 通义千问 (Qwen-plus)
 
 ---
 
-## 🗄️ 数据库（24 张表）
+## 🗄️ 数据库（25 张表）
 
 | 模块 | 表 |
 |------|-----|
-| 用户与角色 | `users`, `roles`, `permissions`, `user_roles`, `role_permissions`, `doctor_patient_relations` |
+| 用户与角色 | `users`, `roles`, `permissions`, `user_roles`, `role_permissions`, `doctor_patient_relations`, `doctor_recommendations` |
 | 检测业务 | `detection_scenes`, `detection_tasks`, `detection_results` |
 | 模型管理 | `training_tasks`, `training_metrics`, `model_versions` |
 | 智能对话 | `chat_sessions`, `chat_messages`, `chat_message_attachments` |
@@ -110,46 +112,84 @@ AI      YOLOv11 (Ultralytics) + 通义千问 (Qwen-plus)
 ## 🚀 快速启动
 
 ### 环境要求
-- Python 3.11+
-- Node.js 18+
-- Docker Desktop
 
-### 1. 启动基础设施
-```bash
-docker-compose up -d
+- Windows 10/11
+- Docker Desktop（WSL 2 后端）
+
+无需在 Windows 单独安装 Python、Node.js、PostgreSQL、Redis 或 MinIO。
+
+### 一键启动
+
+双击项目根目录的 `start.bat`。首次启动会自动完成：
+
+1. 生成本地 `backend/.env` 和随机 JWT 密钥；
+2. 构建前端与后端镜像；
+3. 启动 PostgreSQL、Redis、MinIO、FastAPI 和 Vue/Nginx；
+4. 执行数据库迁移，初始化管理员、检测场景和本地模型记录；
+5. 打开 http://localhost:5173 。
+
+默认本地管理员：`admin` / `admin123`。首次启动后请及时修改密码。
+
+常用地址：
+
+- Web：http://localhost:5173
+- API 文档：http://localhost:8000/docs
+- MinIO 控制台：http://localhost:9001
+
+停止服务请双击 `stop.bat`，数据库与对象存储数据会保留。
+
+### 模型与 LLM
+
+- 检测模型放置于 `backend/models/best.pt`，启动时会自动登记到数据库。
+- 对话功能需要在 `backend/.env` 中填写 `QWEN_API_KEY` 或 `OPENAI_API_KEY`。
+- 单图/批量/ZIP 检测不依赖 LLM，但必须存在模型权重。
+
+### 命令行方式
+
+```powershell
+# 启动或更新
+powershell -ExecutionPolicy Bypass -File scripts/start.ps1
+
+# 查看实时日志
+powershell -ExecutionPolicy Bypass -File scripts/logs.ps1
+
+# 停止（保留数据）
+powershell -ExecutionPolicy Bypass -File scripts/stop.ps1
 ```
 
-### 2. 初始化数据库
+### Linux 服务器用户态部署
+
+当账号没有 Docker 权限时，可使用 SQLite 与内存缓存启动完整网页；生产数据量较大时仍建议由服务器管理员授予 Docker 权限，改用 PostgreSQL/Redis/MinIO：
+
 ```bash
-cd backend
-pip install -r requirements.txt
-alembic upgrade head
-python tools/init_db.py
+# 首次安装依赖、构建前端并初始化数据库
+bash scripts/server-install.sh
+
+# 启动 FastAPI/Vue 与 Cloudflare HTTPS 临时隧道
+bash scripts/server-start.sh
+
+# 停止服务
+bash scripts/server-stop.sh
 ```
 
-### 3. 配置 LLM
-编辑 `backend/.env`：
+`server-start.sh` 返回的 `trycloudflare.com` 地址可直接从网络访问，但属于临时审核地址，隧道重启后可能变化。正式长期部署应配置自有域名或由服务器管理员开放反向代理端口。
+
+### QQ 邮箱注册验证码
+
+公开注册默认要求邮箱验证码。先在 QQ 邮箱设置中开启 SMTP 服务并生成授权码，随后在 `backend/.env` 填写：
+
 ```env
-QWEN_API_KEY=你的API密钥
-QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_MODEL=qwen-plus
+EMAIL_VERIFICATION_REQUIRED=true
+SMTP_HOST=smtp.qq.com
+SMTP_PORT=465
+SMTP_USERNAME=your-account@qq.com
+SMTP_PASSWORD=your-smtp-authorization-code
+SMTP_FROM_EMAIL=your-account@qq.com
+SMTP_FROM_NAME=ChestVision
+SMTP_USE_SSL=true
 ```
 
-### 4. 放置模型权重
-将 `best.pt` 放入 `backend/models/`
-
-### 5. 启动服务
-```bash
-# 终端1：后端
-cd backend && python main.py
-
-# 终端2：前端
-cd frontend && npm install && npm run dev
-```
-
-访问 **http://localhost:5173**，默认管理员：`admin` / `admin123`
-
----
+授权码不是 QQ 登录密码，不应提交到 Git。修改配置后需要重启后端服务。
 
 ## 📁 项目结构
 
@@ -205,4 +245,3 @@ ChestVision/
 ## 👥 团队
 
 西安交通大学 · 胸片X光多智能体分析系统小组
-

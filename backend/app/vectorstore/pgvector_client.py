@@ -122,9 +122,12 @@ class PgvectorClient:
             self._initialized = True
 
     def insert_embeddings(self, contents, embeddings, metadatas=None):
-        """插入向量数据"""
+        """插入向量数据（双写：Pgvector + 内存备份，确保降级时内存有数据）"""
         if not contents or not embeddings:
             return
+
+        # 始终写入内存作为备份（确保 pgvector 故障时内存存储有数据可用）
+        self._memory_store.insert(contents, embeddings, metadatas)
 
         if self._use_pgvector:
             try:
@@ -145,17 +148,15 @@ class PgvectorClient:
                         )
                     conn.commit()
                     cur.close()
-                    logger.info("插入 %d 条向量数据到 Pgvector", len(contents))
+                    logger.info("插入 %d 条向量数据到 Pgvector（内存备份: %d 条）", len(contents), self._memory_store.count())
                     return
                 finally:
                     conn.close()
             except Exception as e:
-                logger.warning("Pgvector 插入失败，降级到内存: %s", str(e))
-                self._use_pgvector = False  # 关键修复：标记pgvector不可用，后续操作使用内存
-
-        # 内存降级
-        self._memory_store.insert(contents, embeddings, metadatas)
-        logger.info("插入 %d 条向量数据到内存存储", len(contents))
+                logger.warning("Pgvector 插入失败，已使用内存存储: %s", str(e))
+                self._use_pgvector = False
+        else:
+            logger.info("插入 %d 条向量数据到内存存储", len(contents))
 
     def search(self, query_embedding, top_k=3):
         """语义检索"""
@@ -194,27 +195,28 @@ class PgvectorClient:
                 finally:
                     conn.close()
             except Exception as e:
-                logger.warning("Pgvector 检索失败，降级到内存: %s", str(e))
-                self._use_pgvector = False  # 关键修复：标记pgvector不可用，后续操作使用内存
+                logger.warning("Pgvector 检索失败，本次降级到内存: %s", str(e))
+                # 不再永久禁用 pgvector，每次检索都尝试（内存已有备份数据）
 
         return self._memory_store.search(query_embedding, top_k)
 
     def count(self):
-        """统计向量数量"""
-        if self._use_pgvector:
+        """统计向量数量（尝试 pgvector 后再查内存）"""
+        try:
+            import psycopg2
+            conn = psycopg2.connect(settings.DATABASE_URL)
             try:
-                import psycopg2
-                conn = psycopg2.connect(settings.DATABASE_URL)
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT COUNT(*) FROM knowledge_embeddings")
-                    result = cur.fetchone()[0]
-                    cur.close()
-                    return result or 0
-                finally:
-                    conn.close()
-            except Exception:
-                pass
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM knowledge_embeddings")
+                result = cur.fetchone()[0]
+                cur.close()
+                if result and result > 0:
+                    self._use_pgvector = True
+                return result or 0
+            finally:
+                conn.close()
+        except Exception:
+            pass
         return self._memory_store.count()
 
     def clear(self):

@@ -11,6 +11,7 @@
 
 from app.api.auth import get_current_user
 from app.core.logger import get_logger
+from app.core.security import hash_password, verify_password
 from app.database.session import SessionLocal
 from app.entity.db_models import (
     DetectionTask,
@@ -30,7 +31,6 @@ from app.entity.schemas import (
     UserResponse,
 )
 from fastapi import APIRouter, Depends, HTTPException
-from passlib.hash import bcrypt
 from sqlalchemy import func
 
 logger = get_logger(__name__)
@@ -98,13 +98,13 @@ def change_my_password(
         if not user:
             raise HTTPException(status_code=404, detail="用户不存在")
 
-        if not bcrypt.verify(data.old_password, user.hashed_password):
+        if not verify_password(data.old_password, user.hashed_password):
             raise HTTPException(status_code=400, detail="旧密码不正确")
 
         if data.old_password == data.new_password:
             raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
 
-        user.hashed_password = bcrypt.hash(data.new_password)
+        user.hashed_password = hash_password(data.new_password)
         db.commit()
 
         logger.info("用户 %s 修改了密码", user.username)

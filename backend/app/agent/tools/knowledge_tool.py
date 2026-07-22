@@ -9,22 +9,28 @@ import json
 
 from langchain_core.tools import tool
 
+from app.config.settings import settings
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 统一使用配置中的相似度阈值
+RAG_THRESHOLD = settings.RAG_SIMILARITY_THRESHOLD
+
 
 @tool
 def search_knowledge(query: str, top_k: int = 3) -> str:
-    """搜索胸部X光影像医学知识库，获取专业领域知识。
+    """【必须调用】搜索胸部X光影像医学知识库。
 
-    当用户询问医学专业知识问题时使用此工具，例如：
-    - "什么是肺不张？"
-    - "胸腔积液有哪些X光表现？"
-    - "气胸的影像学特征是什么？"
-    - "YOLO模型在医疗影像中的应用"
-    - "结节和肿块的X光鉴别要点"
+    当用户提出任何医学领域问题时，你必须首先调用此工具检索知识库，
+    绝对不要跳过检索直接用自己的知识回答。
+
+    触发示例：
+    - "什么是肺不张/实变/钙化/结节/气胸...？"
+    - "XX有哪些X光表现/影像学特征？"
+    - "XX和XX的鉴别要点是什么？"
     - "胸部X光读片的基本原则"
+    - 任何涉及胸部病变定义、特征、诊断的医学问题
 
     Args:
         query: 用户的问题或关键词
@@ -44,21 +50,21 @@ def search_knowledge(query: str, top_k: int = 3) -> str:
                 ensure_ascii=False,
             )
 
-        # 过滤低相似度结果
+        # 使用统一阈值过滤低相似度结果
         max_similarity = max(r.get("similarity", 0) for r in results)
-        if max_similarity < 0.5:
+        if max_similarity < RAG_THRESHOLD:
             return json.dumps(
-                {"answer": "知识库中暂无相关内容", "sources": []},
+                {"answer": "知识库中暂无高度相关内容，以下为近似匹配", "sources": []},
                 ensure_ascii=False,
             )
 
         formatted = []
         for r in results:
-            if r.get("similarity", 0) >= 0.5:
+            if r.get("similarity", 0) >= RAG_THRESHOLD:
                 formatted.append({
-                    "content": r["content"][:300],
+                    "content": r["content"][:500],
                     "source": r.get("metadata", {}).get("source", "未知"),
-                    "similarity": r.get("similarity", 0),
+                    "similarity": round(r.get("similarity", 0), 4),
                 })
 
         if not formatted:

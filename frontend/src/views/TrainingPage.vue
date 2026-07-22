@@ -1,7 +1,10 @@
 <template>
   <div class="training-page">
     <div class="page-header">
-      <h2>模型训练与监控</h2>
+      <div>
+        <h2>模型训练与监控</h2>
+        <span class="page-subtitle">Training</span>
+      </div>
       <el-button type="primary" @click="showCreateDialog = true">
         <el-icon><Plus /></el-icon>新建训练任务
       </el-button>
@@ -634,8 +637,8 @@ async function fetchTasks() {
   try {
     const res = await request.get("/training/tasks");
     taskList.value = res.items || [];
-  } catch (e) {
-    console.error("获取任务列表失败", e);
+  } catch {
+    ElMessage.error("获取训练任务列表失败");
   } finally {
     loadingTasks.value = false;
   }
@@ -683,8 +686,8 @@ async function fetchMetrics() {
     });
     if (statusRes) selectedTask.value = { ...selectedTask.value, ...statusRes };
     if (metrics.length > 0) updateCharts(metrics);
-  } catch (e) {
-    console.error("获取指标失败", e);
+  } catch {
+    ElMessage.warning("获取训练指标失败");
   }
 }
 

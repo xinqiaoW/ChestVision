@@ -10,10 +10,18 @@ import {
 } from "@/api/chat";
 import { defineStore } from "pinia";
 
+const SESSION_STORAGE_KEY = "chestvision_current_session_id";
+
+function restoreSessionId() {
+  if (typeof sessionStorage === "undefined") return null;
+  const value = Number(sessionStorage.getItem(SESSION_STORAGE_KEY));
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
 export const useAgentStore = defineStore("agent", {
   state: () => ({
     // 当前会话 ID（后端 ChatSession.id）
-    currentSessionId: null,
+    currentSessionId: restoreSessionId(),
 
     // 当前会话的消息列表
     messages: [],
@@ -77,6 +85,7 @@ export const useAgentStore = defineStore("agent", {
     newChat() {
       this.currentSessionId = null;
       this.messages = [];
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
       this.abort();
     },
 
@@ -85,6 +94,7 @@ export const useAgentStore = defineStore("agent", {
       this.currentSessionId = null;
       this.messages = [];
       this.sessions = [];
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
       this.abort();
     },
 
@@ -92,6 +102,7 @@ export const useAgentStore = defineStore("agent", {
     setCurrentSessionId(sessionId) {
       if (sessionId && !this.currentSessionId) {
         this.currentSessionId = sessionId;
+        sessionStorage.setItem(SESSION_STORAGE_KEY, String(sessionId));
       }
     },
 
@@ -105,8 +116,8 @@ export const useAgentStore = defineStore("agent", {
       try {
         const res = await getSessionsApi({ status: "all", limit: 50 });
         this.sessions = res.sessions || [];
-      } catch (e) {
-        console.error("加载会话列表失败:", e);
+      } catch {
+        /* 页面层通过 sessionsLoading=false + 空列表自行处理 */
       } finally {
         this.sessionsLoading = false;
       }
@@ -124,15 +135,15 @@ export const useAgentStore = defineStore("agent", {
           createdAt: m.created_at,
         }));
         this.currentSessionId = sessionId;
+        sessionStorage.setItem(SESSION_STORAGE_KEY, String(sessionId));
       } catch (e) {
-        console.error("加载消息失败:", e);
         throw e;
       }
     },
 
     /** 切换到指定会话 */
     async switchSession(sessionId) {
-      if (sessionId === this.currentSessionId) return;
+      if (sessionId === this.currentSessionId && this.messages.length) return;
       await this.loadSessionMessages(sessionId);
     },
 
@@ -145,8 +156,7 @@ export const useAgentStore = defineStore("agent", {
           this.newChat();
         }
         return true;
-      } catch (e) {
-        console.error("删除会话失败:", e);
+      } catch {
         return false;
       }
     },

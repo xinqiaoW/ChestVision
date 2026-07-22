@@ -48,6 +48,7 @@ request.interceptors.response.use(
     }
 
     if (response) {
+      const apiMessage = response.data?.detail || response.data?.message;
       switch (response.status) {
         case 401:
           // Token 过期或无效，清除用户信息并跳转登录页
@@ -67,11 +68,11 @@ request.interceptors.response.use(
 
         case 422:
           // Pydantic 验证错误
-          const detail = response.data?.detail;
+          const detail = response.data?.detail || response.data?.data;
           if (Array.isArray(detail)) {
-            ElMessage.error(detail[0]?.msg || "参数验证失败");
+            ElMessage.error(detail[0]?.msg || detail[0] || "参数验证失败");
           } else {
-            ElMessage.error(detail || "参数验证失败");
+            ElMessage.error(apiMessage || "参数验证失败");
           }
           break;
 
@@ -80,9 +81,7 @@ request.interceptors.response.use(
           break;
 
         default:
-          ElMessage.error(
-            response.data?.detail || `请求失败 (${response.status})`,
-          );
+          ElMessage.error(apiMessage || `请求失败 (${response.status})`);
       }
     } else {
       // 网络错误或请求超时

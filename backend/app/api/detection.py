@@ -23,6 +23,7 @@ from app.entity.db_models import (
     DetectionResult,
     DetectionScene,
     DetectionTask,
+    DoctorPatientRelation,
     ModelVersion,
     PatientProfile,
     User,
@@ -43,6 +44,9 @@ async def detect(
     conf_threshold: float = Query(0.25, ge=0.01, le=1.0, description="置信度阈值"),
     iou_threshold: float = Query(0.45, ge=0.01, le=1.0, description="NMS IoU 阈值"),
     model_version_id: int = Query(None, description="指定模型版本ID，不传则自动选择"),
+    patient_profile_id: int = Query(
+        None, description="关联患者档案ID，用于病史分析与AI医生匹配"
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -136,15 +140,38 @@ async def detect(
             raise HTTPException(status_code=500, detail=f"检测推理失败: {str(e)}")
 
         # ── 关联患者档案（v3.0）──
-        patient_profile_id = None
-        if current_user.user_type == "patient":
+        linked_patient_profile_id = None
+        if patient_profile_id:
+            profile = (
+                db.query(PatientProfile)
+                .filter(PatientProfile.id == patient_profile_id)
+                .first()
+            )
+            if profile is None:
+                raise HTTPException(status_code=404, detail="患者档案不存在")
+            is_allowed = current_user.user_type == "admin" or profile.user_id == current_user.id
+            if current_user.user_type == "doctor":
+                is_allowed = (
+                    db.query(DoctorPatientRelation)
+                    .filter(
+                        DoctorPatientRelation.doctor_id == current_user.id,
+                        DoctorPatientRelation.patient_id == profile.user_id,
+                        DoctorPatientRelation.relation_status == "active",
+                    )
+                    .first()
+                    is not None
+                )
+            if not is_allowed:
+                raise HTTPException(status_code=403, detail="无权关联该患者档案")
+            linked_patient_profile_id = profile.id
+        elif current_user.user_type == "patient":
             profile = (
                 db.query(PatientProfile)
                 .filter(PatientProfile.user_id == current_user.id)
                 .first()
             )
             if profile:
-                patient_profile_id = profile.id  # type: ignore[arg-type]
+                linked_patient_profile_id = profile.id  # type: ignore[arg-type]
 
         # ── 保存检测记录到数据库 ──
         task = detection_service.save_detection_task(
@@ -154,16 +181,16 @@ async def detect(
             model_version_id=model_version.id if model_version else None,  # type: ignore[arg-type]
             image_path=file.filename or "",
             predict_result=result,
-            patient_profile_id=patient_profile_id,
+            patient_profile_id=linked_patient_profile_id,
         )
 
         # ── LLM 病史感知分析（v3.0 P1）──
         analysis = None
-        if patient_profile_id:
+        if linked_patient_profile_id:
             try:
                 analysis = detection_service.analyze_with_history(
                     db=db,
-                    patient_profile_id=patient_profile_id,
+                    patient_profile_id=linked_patient_profile_id,
                     current_result={
                         "total_objects": result["total_objects"],
                         "class_counts": {
@@ -407,9 +434,10 @@ async def detect_single_shortcut(
         result["filename"] = file.filename
 
         # 入库
-        _save_detection_to_db(
+        task = _save_detection_to_db(
             db, current_user, file.filename or "single", result, "single"
         )
+        result["task_id"] = task.id if task else None
         return result
     finally:
         try:
@@ -442,9 +470,10 @@ async def detect_batch_shortcut(
 
         # 入库
         filename_list = [f.filename or "batch" for f in files]
-        _save_detection_to_db(
+        task = _save_detection_to_db(
             db, current_user, ", ".join(filename_list), result, "batch"
         )
+        result["task_id"] = task.id if task else None
         return result
     finally:
         for p in temp_paths:
@@ -472,7 +501,10 @@ async def detect_zip_shortcut(
         result = detection_service.detect_zip(tmp_path, conf=conf)
 
         # 入库
-        _save_detection_to_db(db, current_user, file.filename or "zip", result, "zip")
+        task = _save_detection_to_db(
+            db, current_user, file.filename or "zip", result, "zip"
+        )
+        result["task_id"] = task.id if task else None
         return result
     finally:
         try:
@@ -491,7 +523,7 @@ def _save_detection_to_db(db, current_user, image_path, result, task_type):
         )
         if not scene:
             logger.warning("检测场景不存在，跳过入库")
-            return
+            return None
 
         model_version = (
             db.query(ModelVersion)
@@ -531,7 +563,7 @@ def _save_detection_to_db(db, current_user, image_path, result, task_type):
         if result.get("annotated_image_path"):
             predict_result["annotated_image_path"] = result["annotated_image_path"]
 
-        detection_service.save_detection_task(
+        return detection_service.save_detection_task(
             db=db,
             user_id=current_user.id,
             scene_id=scene.id,
@@ -543,8 +575,4 @@ def _save_detection_to_db(db, current_user, image_path, result, task_type):
         )
     except Exception as e:
         logger.error("快捷检测入库失败: %s", str(e))
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
+        return None

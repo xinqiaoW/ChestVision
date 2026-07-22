@@ -7,11 +7,14 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+from app.core.logger import get_logger
 from app.database.session import SessionLocal
 from app.entity.db_models import ChatMessage, ChatSession
 from app.entity.schemas import ChatMessageRequest, ChatSessionCreate
 from langchain_core.messages import AIMessage, HumanMessage
 from sqlalchemy import desc
+
+logger = get_logger(__name__)
 
 
 def create_session(
@@ -42,7 +45,7 @@ def get_or_create_session(
     session_id: Optional[int] = None,
     title: Optional[str] = None,
 ) -> ChatSession:
-    """获取或创建会话：有 session_id 则查询，否则新建"""
+    """按显式 session_id 获取会话；未传 ID 时始终创建新会话。"""
     db = SessionLocal()
     try:
         if session_id:
@@ -50,14 +53,31 @@ def get_or_create_session(
                 db.query(ChatSession)
                 .filter(
                     ChatSession.id == session_id,
-                    ChatSession.user_id == user_id,  # 关键：校验归属用户
+                    ChatSession.user_id == user_id,
                 )
                 .first()
             )
             if session:
                 return session
-            # session_id 不存在或不属于该用户 → 新建
+            raise ValueError("会话不存在或无权访问")
+
         return create_session(user_id, title)
+    finally:
+        db.close()
+
+
+def get_session(session_id: int, user_id: int) -> Optional[ChatSession]:
+    """获取属于当前用户的会话，不存在时返回 None，且不产生任何写入。"""
+    db = SessionLocal()
+    try:
+        return (
+            db.query(ChatSession)
+            .filter(
+                ChatSession.id == session_id,
+                ChatSession.user_id == user_id,
+            )
+            .first()
+        )
     finally:
         db.close()
 

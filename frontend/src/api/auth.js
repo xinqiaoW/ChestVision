@@ -11,6 +11,11 @@ export function registerApi(data) {
   return request.post("/auth/register", data);
 }
 
+/** 发送注册邮箱验证码 */
+export function sendRegistrationCodeApi(email) {
+  return request.post("/auth/email-verification/send", { email });
+}
+
 /**
  * 用户登录
  * @param {Object} data - { username, password }
