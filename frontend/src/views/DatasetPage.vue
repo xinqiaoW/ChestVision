@@ -119,8 +119,34 @@
       </el-form>
       <div v-if="uploadProgress.visible" class="upload-progress">
         <div class="progress-title">
-          <span>分片 {{ uploadProgress.uploadedParts }}/{{ uploadProgress.totalParts }}</span>
+          <span>OSS 分片上传</span>
           <span>{{ uploadProgress.phaseText }}</span>
+        </div>
+        <div class="progress-stats">
+          <div class="progress-stat">
+            <span class="stat-label">总分片</span>
+            <span class="stat-value">{{ uploadProgress.totalParts }} 片</span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-label">已上传</span>
+            <span class="stat-value">
+              {{ uploadProgress.uploadedParts }}/{{ uploadProgress.totalParts }} 片
+            </span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-label">当前分片</span>
+            <span class="stat-value">
+              {{
+                uploadProgress.currentPartNumber
+                  ? `第 ${uploadProgress.currentPartNumber} 片`
+                  : "-"
+              }}
+            </span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-label">分片大小</span>
+            <span class="stat-value">{{ formatBytes(uploadProgress.partSize) }}</span>
+          </div>
         </div>
         <el-progress
           :percentage="Math.round(uploadProgress.percent)"
@@ -146,7 +172,12 @@
 </template>
 
 <script setup>
-import { deleteDataset, getDatasets, uploadDataset } from "@/api/dataset";
+import {
+  DATASET_UPLOAD_PART_SIZE,
+  deleteDataset,
+  getDatasets,
+  uploadDataset,
+} from "@/api/dataset";
 import {
   Delete,
   FolderOpened,
@@ -205,6 +236,7 @@ function onFileChange(file) {
   if (!uploadForm.value.datasetName && file.name) {
     uploadForm.value.datasetName = file.name.replace(/\.zip$/i, "");
   }
+  uploadProgress.value = createUploadProgress(true);
 }
 
 function onFileRemove() {
@@ -272,14 +304,20 @@ async function confirmDelete(row) {
 }
 
 function createUploadProgress(visible = false) {
+  const totalBytes = selectedFile.value?.size || 0;
+  const totalParts = totalBytes
+    ? Math.ceil(totalBytes / DATASET_UPLOAD_PART_SIZE)
+    : 0;
   return {
     visible,
     phase: "idle",
     phaseText: "等待上传",
+    currentPartNumber: null,
     uploadedParts: 0,
-    totalParts: 0,
+    totalParts,
+    partSize: DATASET_UPLOAD_PART_SIZE,
     uploadedBytes: 0,
-    totalBytes: selectedFile.value?.size || 0,
+    totalBytes,
     percent: 0,
     speedBytesPerSecond: 0,
     remainingSeconds: null,
@@ -297,6 +335,7 @@ function updateUploadProgress(progress) {
   };
   uploadProgress.value = {
     visible: true,
+    partSize: uploadProgress.value.partSize || DATASET_UPLOAD_PART_SIZE,
     ...progress,
     phaseText: phaseTextMap[progress.phase] || "上传中",
   };
@@ -443,6 +482,42 @@ onMounted(fetchDatasets);
   margin-bottom: 8px;
 }
 
+.progress-stats {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.progress-stat {
+  background: #f5f7fa;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.stat-label,
+.stat-value {
+  display: block;
+  min-width: 0;
+}
+
+.stat-label {
+  color: #909399;
+  font-size: 12px;
+}
+
+.stat-value {
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .progress-meta {
   color: #606266;
   flex-wrap: wrap;
@@ -464,6 +539,10 @@ onMounted(fetchDatasets);
 
   .header-actions .el-button {
     flex: 1;
+  }
+
+  .progress-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

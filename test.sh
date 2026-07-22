@@ -18,3 +18,6 @@ curl -s -X POST "$API/api/training/remote/uploads" \
     "content_type": "application/zip",
     "expected_size": 1024
   }' | tee /tmp/remote-upload.json
+
+
+npm run dev -- --host 0.0.0.0  --port 80

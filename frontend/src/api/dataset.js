@@ -1,6 +1,6 @@
 import request from "@/utils/request";
 
-const DEFAULT_PART_SIZE = 32 * 1024 * 1024;
+export const DATASET_UPLOAD_PART_SIZE = 32 * 1024 * 1024;
 
 export function getDatasets() {
   return request.get("/training/remote/datasets");
@@ -41,7 +41,7 @@ export function deleteDataset(datasetRef) {
 }
 
 export async function uploadDataset({ datasetName, file, onProgress }) {
-  const partSize = DEFAULT_PART_SIZE;
+  const partSize = DATASET_UPLOAD_PART_SIZE;
   const session = await createDatasetUpload({ datasetName, file, partSize });
   const multipart = session.multipart || {};
   const resolvedPartSize = multipart.part_size || partSize;
