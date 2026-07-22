@@ -17,7 +17,7 @@ python backend/tools/pai_dlc_test.py --case all
 - READY 数据集才能启动远程训练。
 - payload 包含 workspace/resource/image/job_type/user_command/envs。
 - envs 包含 `TASK_UUID`、`DATASET_PREFIX`、`OUTPUT_PREFIX`、训练参数、callback 信息。
-- output prefix 固定为 `training/jobs/{task_uuid}/`。
+- output prefix 固定为 `train/jobs/{task_uuid}/`。
 
 模拟断言：
 
@@ -64,7 +64,7 @@ python backend/tools/pai_dlc_test.py --case all
 
 - 训练完成不能只信 DLC 状态或 callback。
 - 必须验证：
-  - `training/jobs/{task_uuid}/_SUCCESS`
+  - `train/jobs/{task_uuid}/_SUCCESS`
   - `results.csv`
   - `weights/best.pt`
   - 可选 `eval_report.json`

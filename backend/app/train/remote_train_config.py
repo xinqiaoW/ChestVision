@@ -42,6 +42,10 @@ PAI_REQUIRED_CONFIG = [
 
 CALLBACK_REQUIRED_CONFIG = [
     ("remote_callback_secret", "REMOTE_TRAINING_CALLBACK_SECRET"),
+    (
+        "remote_metrics_callback_url",
+        "REMOTE_TRAINING_METRICS_CALLBACK_URL 或 REMOTE_TRAINING_CALLBACK_URL/CALLBACK_URL",
+    ),
 ]
 
 
@@ -77,6 +81,18 @@ def _env_int(name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _derive_metrics_callback_url(value: str) -> str:
+    """从旧 CALLBACK_URL 兼容推导 metrics 回调地址。"""
+    url = value.strip()
+    if not url:
+        return ""
+    if url.endswith("/callbacks/metrics"):
+        return url
+    if url.endswith("/callbacks/dlc"):
+        return url[: -len("/callbacks/dlc")] + "/callbacks/metrics"
+    return url.rstrip("/") + "/callbacks/metrics"
+
+
 @dataclass(frozen=True)
 class RemoteTrainSettings:
     """远程训练运行配置。
@@ -97,12 +113,18 @@ class RemoteTrainSettings:
     oss_endpoint: str
     oss_region: str
     oss_bucket: str
+    # PAI-DLC DataSources 使用的 OSS endpoint。默认沿用 OSS_ENDPOINT，可按需改为 internal endpoint。
+    pai_oss_endpoint: str
+    # PAI-DLC DataSources 使用的完整 OSS URI host，可覆盖 bucket + endpoint 自动拼接。
+    pai_oss_uri_host: str
     # 远程训练对象前缀，用于隔离本功能产生的 raw dataset、processed dataset 和 training output。
     oss_prefix: str
     # 浏览器直传 URL 有效期。URL 泄露后在过期前可上传到指定 object key，因此不应设置过长。
     upload_url_expires_seconds: int
     # OSS/EventBridge/FC 调用后端内部接口时使用的机器密钥，不下发给浏览器。
     remote_callback_secret: str
+    # PAI-DLC 容器向后端上报 epoch 指标的公网可访问地址。
+    remote_metrics_callback_url: str
 
     # PAI-DLC 控制面凭证。用于 CreateJob/GetJob/StopJob，不会下发给浏览器。
     pai_access_key_id: str
@@ -144,9 +166,20 @@ class RemoteTrainSettings:
             oss_endpoint=_env("OSS_ENDPOINT"),
             oss_region=_env("OSS_REGION", _env("PAI_REGION_ID")),
             oss_bucket=_env("OSS_BUCKET"),
+            pai_oss_endpoint=_env(
+                "PAI_DLC_OSS_ENDPOINT",
+                _env("PAI_OSS_ENDPOINT", _env("OSS_ENDPOINT")),
+            ),
+            pai_oss_uri_host=_env("PAI_DLC_OSS_URI_HOST"),
             oss_prefix=_env("REMOTE_TRAIN_OSS_PREFIX", "remote-training"),
             upload_url_expires_seconds=_env_int("OSS_UPLOAD_URL_EXPIRES_SECONDS", 900),
             remote_callback_secret=_env("REMOTE_TRAINING_CALLBACK_SECRET"),
+            remote_metrics_callback_url=_env(
+                "REMOTE_TRAINING_METRICS_CALLBACK_URL",
+                _derive_metrics_callback_url(
+                    _env("REMOTE_TRAINING_CALLBACK_URL", _env("CALLBACK_URL"))
+                ),
+            ),
             pai_access_key_id=_env(
                 "PAI_ACCESS_KEY_ID", _env("ALIBABA_CLOUD_ACCESS_KEY_ID")
             ),
@@ -210,6 +243,11 @@ class RemoteTrainSettings:
         missing = self.missing_pai_config()
         if missing:
             raise RemoteTrainConfigError("缺少 PAI-DLC 配置：" + ", ".join(missing))
+
+    def require_callback(self) -> None:
+        missing = self.missing_callback_config()
+        if missing:
+            raise RemoteTrainConfigError("缺少远程训练回调配置：" + ", ".join(missing))
 
 
 def load_remote_train_settings() -> RemoteTrainSettings:

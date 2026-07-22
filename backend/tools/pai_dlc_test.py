@@ -297,7 +297,7 @@ class RemoteTrainingService:
         task_id = self.next_task_id
         self.next_task_id += 1
         task_uuid = uuid.uuid4().hex[:8]
-        output_prefix = f"training/jobs/{task_uuid}/"
+        output_prefix = f"train/jobs/{task_uuid}/"
         callback_token = "cb_" + uuid.uuid4().hex
         callback_token_hash = self._hash(callback_token)
 

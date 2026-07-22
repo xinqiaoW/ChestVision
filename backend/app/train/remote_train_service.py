@@ -9,6 +9,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from app.core.logger import get_logger
 from app.entity.db_models import (
@@ -65,6 +66,39 @@ def _hash_token(token: str) -> str:
 
 def _normalize_prefix(prefix: str) -> str:
     return prefix.strip("/") + "/" if prefix else ""
+
+
+def _endpoint_host(endpoint: str) -> str:
+    value = (endpoint or "").strip()
+    if not value:
+        raise RemoteTrainingValidationError("OSS endpoint 不能为空")
+    parsed = urlparse(value if "://" in value else f"https://{value}")
+    host = parsed.netloc or parsed.path.split("/", 1)[0]
+    host = host.strip().strip("/")
+    if not host:
+        raise RemoteTrainingValidationError("OSS endpoint 格式无效")
+    return host
+
+
+def _dlc_oss_uri(
+    bucket: str,
+    endpoint: str,
+    prefix: str,
+    uri_host: str = "",
+) -> str:
+    bucket_name = (bucket or "").strip().strip("/")
+    object_prefix = _normalize_prefix(prefix)
+    if not bucket_name and not uri_host:
+        raise RemoteTrainingValidationError("OSS bucket 不能为空")
+    if not object_prefix:
+        raise RemoteTrainingValidationError("OSS 对象前缀不能为空")
+    endpoint_host = _endpoint_host(uri_host or endpoint)
+    authority = (
+        endpoint_host
+        if uri_host or endpoint_host.startswith(f"{bucket_name}.")
+        else f"{bucket_name}.{endpoint_host}"
+    )
+    return f"oss://{authority}/{object_prefix}"
 
 
 def _object_parent_prefix(key: str) -> str:
@@ -682,12 +716,11 @@ class RemoteTrainingService:
             raise RemoteTrainingValidationError("数据集不存在")
         if upload.status not in {"UPLOADED", "READY"}:
             raise RemoteTrainingValidationError("数据集尚未上传完成，不能启动训练")
+        self.settings.require_callback()
 
         scene = self.resolve_scene(db, user_id, upload.scene_id, None)
         task_uuid = uuid.uuid4().hex[:8]
-        output_prefix = (
-            f"{_normalize_prefix(self.settings.oss_prefix)}training/jobs/{task_uuid}/"
-        )
+        output_prefix = f"train/jobs/{task_uuid}/"
         input_dataset_prefix = upload.processed_prefix or _object_parent_prefix(
             upload.raw_object_key
         )
@@ -823,7 +856,11 @@ class RemoteTrainingService:
         db.commit()
         db.refresh(task)
         db.refresh(remote_job)
-        return self.serialize_training(task, remote_job)
+        return self.serialize_training(
+            task,
+            remote_job,
+            latest_metric=self._latest_metric_payload(db, task.id),
+        )
 
     def stop_training(
         self, db: Session, task_id: int, user_id: int | None = None
@@ -840,7 +877,11 @@ class RemoteTrainingService:
         remote_job.remote_status = "STOPPED"
         remote_job.completed_at = remote_job.completed_at or _now()
         db.commit()
-        return self.serialize_training(task, remote_job)
+        return self.serialize_training(
+            task,
+            remote_job,
+            latest_metric=self._latest_metric_payload(db, task.id),
+        )
 
     def handle_dlc_callback(
         self,
@@ -873,7 +914,79 @@ class RemoteTrainingService:
         elif remote_job.remote_status == "STOPPED":
             task.status = "cancelled"
         db.commit()
-        return self.serialize_training(task, remote_job)
+        return self.serialize_training(
+            task,
+            remote_job,
+            latest_metric=self._latest_metric_payload(db, task.id),
+        )
+
+    def handle_metric_callback(
+        self,
+        db: Session,
+        task_uuid: str,
+        token: str,
+        epoch: int,
+        total_epochs: int | None,
+        metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        """接收 PAI-DLC 容器按 epoch 上报的训练监控指标。"""
+        task = db.query(TrainingTask).filter(TrainingTask.task_uuid == task_uuid).first()
+        if not task:
+            raise RemoteTrainingValidationError("远程训练任务不存在")
+        remote_job = (
+            db.query(RemoteTrainingJob)
+            .filter(RemoteTrainingJob.task_id == task.id)
+            .first()
+        )
+        if not remote_job:
+            raise RemoteTrainingValidationError("远程训练任务不存在")
+        if remote_job.callback_token_hash != _hash_token(token):
+            raise RemoteTrainingValidationError("回调 token 无效")
+
+        metric = (
+            db.query(TrainingMetric)
+            .filter(TrainingMetric.task_id == task.id, TrainingMetric.epoch == epoch)
+            .first()
+        )
+        if not metric:
+            metric = TrainingMetric(task_id=task.id, epoch=epoch)
+            db.add(metric)
+        for field in [
+            "box_loss",
+            "cls_loss",
+            "dfl_loss",
+            "precision",
+            "recall",
+            "map50",
+            "map50_95",
+            "lr",
+        ]:
+            value = metrics.get(field)
+            if value is not None:
+                setattr(metric, field, float(value))
+
+        total = total_epochs or task.epochs or 1
+        task.current_epoch = max(task.current_epoch or 0, epoch)
+        task.progress = max(
+            task.progress or 0,
+            min(int((task.current_epoch / total) * 100), 99),
+        )
+        if task.status not in {"completed", "failed", "cancelled"}:
+            task.status = "running"
+        task.started_at = task.started_at or _now()
+        task.updated_at = _now()
+        if remote_job.remote_status not in {"SUCCEEDED", "FAILED", "STOPPED"}:
+            remote_job.remote_status = "RUNNING"
+        remote_job.last_synced_at = _now()
+        remote_job.updated_at = _now()
+        db.commit()
+        db.refresh(task)
+        db.refresh(remote_job)
+        return self.serialize_training(
+            task,
+            remote_job,
+            latest_metric=self._metric_payload(metric),
+        )
 
     def list_artifact_locations(
         self, db: Session, task_id: int, user_id: int | None = None
@@ -910,6 +1023,8 @@ class RemoteTrainingService:
             "OUTPUT_PREFIX": output_prefix,
             "OSS_BUCKET": self.settings.oss_bucket,
             "CALLBACK_TOKEN": callback_token,
+            "METRICS_CALLBACK_URL": self.settings.remote_metrics_callback_url,
+            "CALLBACK_TIMEOUT_SECONDS": "5",
             "MODEL_NAME": task.model_name,
             "EPOCHS": str(task.epochs),
             "IMG_SIZE": str(task.img_size),
@@ -929,6 +1044,8 @@ class RemoteTrainingService:
         model = task.model_name
         if not model.endswith(".pt"):
             model = model + ".pt"
+        optimizer = task.optimizer or "SGD"
+        lr0 = task.lr0 if task.lr0 is not None else 0.01
         return (
             "set -e; "
             f"mkdir -p {output}/weights {output}/dataset; "
@@ -968,10 +1085,84 @@ class RemoteTrainingService:
             f"open(os.path.join(output_dir, 'dataset', 'validation_report.json'), 'w').write(json.dumps(report, ensure_ascii=False))\n"
             f"open('/tmp/remote_data_yaml_path', 'w').write(data_yaml)\n"
             f"PY\n"
-            f"DATA_YAML=$(cat /tmp/remote_data_yaml_path); "
-            f"yolo detect train model={model} data=\"$DATA_YAML\" "
-            f"epochs={task.epochs} imgsz={task.img_size} batch={task.batch_size} "
-            f"project={output} name=run exist_ok=True; "
+            f"python - <<'PY'\n"
+            f"import json, os, urllib.request\n"
+            f"from ultralytics import YOLO\n"
+            f"data_yaml = open('/tmp/remote_data_yaml_path', encoding='utf-8').read().strip()\n"
+            f"output_dir = {output!r}\n"
+            f"model_name = {model!r}\n"
+            f"epochs = {int(task.epochs)}\n"
+            f"img_size = {int(task.img_size)}\n"
+            f"batch_size = {int(task.batch_size)}\n"
+            f"optimizer = {optimizer!r}\n"
+            f"lr0 = {float(lr0)!r}\n"
+            f"def to_float(value):\n"
+            f"    if value is None:\n"
+            f"        return None\n"
+            f"    try:\n"
+            f"        if hasattr(value, 'item'):\n"
+            f"            value = value.item()\n"
+            f"        return float(value)\n"
+            f"    except Exception:\n"
+            f"        return None\n"
+            f"def first_float(*values):\n"
+            f"    for value in values:\n"
+            f"        parsed = to_float(value)\n"
+            f"        if parsed is not None:\n"
+            f"            return parsed\n"
+            f"    return None\n"
+            f"def collect_metrics(trainer):\n"
+            f"    data = {{}}\n"
+            f"    raw = getattr(trainer, 'metrics', {{}}) or {{}}\n"
+            f"    if isinstance(raw, dict):\n"
+            f"        data.update(raw)\n"
+            f"    for attr in ('tloss', 'loss_items'):\n"
+            f"        try:\n"
+            f"            items = trainer.label_loss_items(getattr(trainer, attr), prefix='train')\n"
+            f"            if isinstance(items, dict):\n"
+            f"                data.update(items)\n"
+            f"        except Exception:\n"
+            f"            pass\n"
+            f"    return data\n"
+            f"def get_lr(trainer):\n"
+            f"    lr = getattr(trainer, 'lr', None)\n"
+            f"    if isinstance(lr, dict):\n"
+            f"        values = [lr.get('lr/pg0'), lr.get('pg0')] + list(lr.values())\n"
+            f"        return first_float(*values)\n"
+            f"    return to_float(lr)\n"
+            f"def post_metric(payload):\n"
+            f"    url = os.environ.get('METRICS_CALLBACK_URL')\n"
+            f"    token = os.environ.get('CALLBACK_TOKEN')\n"
+            f"    task_uuid = os.environ.get('TASK_UUID')\n"
+            f"    if not url or not token or not task_uuid:\n"
+            f"        return\n"
+            f"    payload.update({{'task_uuid': task_uuid, 'token': token, 'total_epochs': epochs}})\n"
+            f"    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')\n"
+            f"    request = urllib.request.Request(url, data=body, headers={{'Content-Type': 'application/json'}}, method='POST')\n"
+            f"    timeout = float(os.environ.get('CALLBACK_TIMEOUT_SECONDS', '5'))\n"
+            f"    try:\n"
+            f"        with urllib.request.urlopen(request, timeout=timeout) as response:\n"
+            f"            response.read()\n"
+            f"    except Exception as exc:\n"
+            f"        print('metric callback failed: ' + type(exc).__name__, flush=True)\n"
+            f"def on_train_epoch_end(trainer):\n"
+            f"    epoch = int(getattr(trainer, 'epoch', 0)) + 1\n"
+            f"    data = collect_metrics(trainer)\n"
+            f"    post_metric({{\n"
+            f"        'epoch': epoch,\n"
+            f"        'box_loss': first_float(data.get('train/box_loss'), data.get('metrics/box_loss'), data.get('box_loss')),\n"
+            f"        'cls_loss': first_float(data.get('train/cls_loss'), data.get('metrics/cls_loss'), data.get('cls_loss')),\n"
+            f"        'dfl_loss': first_float(data.get('train/dfl_loss'), data.get('metrics/dfl_loss'), data.get('dfl_loss')),\n"
+            f"        'precision': first_float(data.get('metrics/precision(B)'), data.get('precision')),\n"
+            f"        'recall': first_float(data.get('metrics/recall(B)'), data.get('recall')),\n"
+            f"        'map50': first_float(data.get('metrics/mAP50(B)'), data.get('map50')),\n"
+            f"        'map50_95': first_float(data.get('metrics/mAP50-95(B)'), data.get('map50_95')),\n"
+            f"        'lr': get_lr(trainer),\n"
+            f"    }})\n"
+            f"model = YOLO(model_name)\n"
+            f"model.add_callback('on_train_epoch_end', on_train_epoch_end)\n"
+            f"model.train(data=data_yaml, epochs=epochs, imgsz=img_size, batch=batch_size, optimizer=optimizer, lr0=lr0, project=output_dir, name='run', exist_ok=True, verbose=True, save=True, plots=False)\n"
+            f"PY\n"
             f"cp {output}/run/results.csv {output}/results.csv; "
             f"cp {output}/run/weights/best.pt {output}/weights/best.pt; "
             f"cp {output}/run/weights/last.pt {output}/weights/last.pt || true; "
@@ -1006,6 +1197,27 @@ class RemoteTrainingService:
                 "Password": self.settings.pai_acr_password,
             }
 
+        data_sources = [
+            {
+                "Uri": _dlc_oss_uri(
+                    self.settings.oss_bucket,
+                    self.settings.pai_oss_endpoint,
+                    remote_job.input_dataset_prefix,
+                    self.settings.pai_oss_uri_host,
+                ),
+                "MountPath": self.settings.pai_dataset_mount_path,
+            },
+            {
+                "Uri": _dlc_oss_uri(
+                    self.settings.oss_bucket,
+                    self.settings.pai_oss_endpoint,
+                    remote_job.output_prefix,
+                    self.settings.pai_oss_uri_host,
+                ),
+                "MountPath": self.settings.pai_output_mount_path,
+            },
+        ]
+
         payload: dict[str, Any] = {
             "WorkspaceId": self.settings.pai_workspace_id,
             "DisplayName": f"chestx-train-{remote_job.training_task.task_uuid}",
@@ -1014,19 +1226,11 @@ class RemoteTrainingService:
             "UserCommand": remote_job.user_command,
             "Envs": remote_job.envs or {},
             "JobMaxRunningTimeMinutes": self.settings.pai_job_max_running_minutes,
-            "DataSources": [
-                {
-                    "Uri": f"oss://{self.settings.oss_bucket}/{remote_job.input_dataset_prefix}",
-                    "MountPath": self.settings.pai_dataset_mount_path,
-                },
-                {
-                    "Uri": f"oss://{self.settings.oss_bucket}/{remote_job.output_prefix}",
-                    "MountPath": self.settings.pai_output_mount_path,
-                },
-            ],
+            "DataSources": data_sources,
         }
         if self.settings.pai_resource_id:
             payload["ResourceId"] = self.settings.pai_resource_id
+        logger.info("PAI-DLC CreateJob DataSources: %s", data_sources)
         return payload
 
     def _complete_if_artifacts_ready(
@@ -1052,6 +1256,7 @@ class RemoteTrainingService:
             return
         task.status = "completed"
         task.progress = 100
+        task.current_epoch = task.epochs
         task.completed_at = task.completed_at or _now()
         remote_job.completed_at = remote_job.completed_at or _now()
         for artifact_type, key, content_type in [
@@ -1094,6 +1299,7 @@ class RemoteTrainingService:
             .filter(TrainingMetric.task_id == task.id)
             .all()
         }
+        max_epoch = task.current_epoch or 0
         for line in rows[1:]:
             values = [value.strip() for value in line.split(",")]
             row = dict(zip(headers, values))
@@ -1105,6 +1311,7 @@ class RemoteTrainingService:
             except ValueError:
                 continue
             if epoch in existing_epochs:
+                max_epoch = max(max_epoch, epoch)
                 continue
             metric = TrainingMetric(
                 task_id=task.id,
@@ -1120,6 +1327,14 @@ class RemoteTrainingService:
             )
             db.add(metric)
             existing_epochs.add(epoch)
+            max_epoch = max(max_epoch, epoch)
+        if max_epoch:
+            task.current_epoch = max(task.current_epoch or 0, max_epoch)
+            if task.status != "completed":
+                task.progress = max(
+                    task.progress or 0,
+                    min(int((task.current_epoch / max(task.epochs or 1, 1)) * 100), 99),
+                )
 
     @staticmethod
     def _float(value: str | None) -> float | None:
@@ -1129,6 +1344,33 @@ class RemoteTrainingService:
             return float(value)
         except ValueError:
             return None
+
+    @staticmethod
+    def _metric_payload(metric: TrainingMetric | None) -> dict[str, Any] | None:
+        if not metric:
+            return None
+        return {
+            "epoch": metric.epoch,
+            "box_loss": metric.box_loss,
+            "cls_loss": metric.cls_loss,
+            "dfl_loss": metric.dfl_loss,
+            "precision": metric.precision,
+            "recall": metric.recall,
+            "map50": metric.map50,
+            "map50_95": metric.map50_95,
+            "lr": metric.lr,
+        }
+
+    def _latest_metric_payload(
+        self, db: Session, task_id: int
+    ) -> dict[str, Any] | None:
+        metric = (
+            db.query(TrainingMetric)
+            .filter(TrainingMetric.task_id == task_id)
+            .order_by(TrainingMetric.epoch.desc())
+            .first()
+        )
+        return self._metric_payload(metric)
 
     def _upsert_artifact_location(
         self,
@@ -1340,7 +1582,10 @@ class RemoteTrainingService:
         }
 
     def serialize_training(
-        self, task: TrainingTask, remote_job: RemoteTrainingJob
+        self,
+        task: TrainingTask,
+        remote_job: RemoteTrainingJob,
+        latest_metric: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "id": task.id,
@@ -1350,8 +1595,12 @@ class RemoteTrainingService:
             "epochs": task.epochs,
             "current_epoch": task.current_epoch,
             "progress": task.progress,
+            "device": task.device,
+            "batch_size": task.batch_size,
+            "img_size": task.img_size,
             "dataset_path": task.dataset_path,
             "error_message": task.error_message,
+            "latest_metric": latest_metric,
             "remote": {
                 "dlc_job_id": remote_job.dlc_job_id,
                 "remote_status": remote_job.remote_status,

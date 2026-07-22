@@ -81,7 +81,7 @@ PAI-DLC Train Job
 {oss_prefix}/{user_id}/{upload_id}/dataset.zip
 {oss_prefix}/{user_id}/{upload_id}/client.json
 
-{oss_prefix}/training/jobs/{task_uuid}/
+train/jobs/{task_uuid}/
   code/                  # 可选：训练脚本快照
   logs/
   dataset/
@@ -732,9 +732,9 @@ backend/tools/fc_oss_multipart_complete_handler.py
   "task_uuid": "abcd1234",
   "dlc_job_id": "dlc_xxx",
   "status": "SUCCEEDED",
-  "output_prefix": "training/jobs/abcd1234/",
-  "results_csv_key": "training/jobs/abcd1234/results.csv",
-  "best_weight_key": "training/jobs/abcd1234/weights/best.pt",
+  "output_prefix": "train/jobs/abcd1234/",
+  "results_csv_key": "train/jobs/abcd1234/results.csv",
+  "best_weight_key": "train/jobs/abcd1234/weights/best.pt",
   "metrics_summary": {
     "map50": 0.73,
     "map50_95": 0.41,
@@ -790,7 +790,7 @@ backend/tools/fc_oss_multipart_complete_handler.py
 9. DLC 训练脚本周期性写 metrics.jsonl 或 results.csv 到 OSS。
 10. Worker 增量读取 metrics，写入 training_metrics。
 11. DLC 完成后写 best.pt、last.pt、results.csv、eval_report.json。
-12. DLC 最后写 training/jobs/{task_uuid}/_SUCCESS。
+12. DLC 最后写 train/jobs/{task_uuid}/_SUCCESS。
 13. DLC callback 与 _SUCCESS 事件都触发后端同步。
 14. 后端验证 validation_report、best.pt、results.csv、_SUCCESS，更新 training_tasks completed。
 15. 后端创建 model_versions，写 oss_model_key/oss_model_url。
@@ -807,7 +807,7 @@ backend/tools/fc_oss_multipart_complete_handler.py
 
 ```text
 RAW_OBJECT_KEY={oss_prefix}/{user_id}/{upload_id}/dataset.zip
-OUTPUT_PREFIX={oss_prefix}/training/jobs/{task_uuid}/
+OUTPUT_PREFIX=train/jobs/{task_uuid}/
 DATASET_ID=...
 UPLOAD_ID=...
 TASK_UUID=...
@@ -824,7 +824,7 @@ CALLBACK_TOKEN=...
 - 识别 YOLO 数据集结构。
 - 如缺少 `data.yaml`，按当前本地上传逻辑推断类别并生成；如果推断失败则训练失败。
 - 校验图片和标签数量、空标签、类别 ID 范围、损坏图片。
-- 写入 `training/jobs/{task_uuid}/dataset/validation_report.json`。
+- 写入 `train/jobs/{task_uuid}/dataset/validation_report.json`。
 - 校验失败时主动回调服务端，任务退出非零状态。
 - 校验成功后把本地 `data.yaml` 的 `path` 修正为容器内实际路径，进入训练阶段。
 
@@ -866,7 +866,7 @@ Job 类型：
 TASK_ID=123
 TASK_UUID=abcd1234
 RAW_OBJECT_KEY={oss_prefix}/{user_id}/{upload_id}/dataset.zip
-OUTPUT_PREFIX={oss_prefix}/training/jobs/{task_uuid}/
+OUTPUT_PREFIX=train/jobs/{task_uuid}/
 MODEL_NAME=yolo11n
 EPOCHS=100
 IMG_SIZE=640
@@ -909,7 +909,7 @@ PAI-DLC `CreateJob` 请求核心字段：
   "Envs": {
     "TASK_UUID": "abcd1234",
     "RAW_OBJECT_KEY": "{oss_prefix}/{user_id}/{upload_id}/dataset.zip",
-    "OUTPUT_PREFIX": "{oss_prefix}/training/jobs/{task_uuid}/"
+    "OUTPUT_PREFIX": "train/jobs/{task_uuid}/"
   },
   "JobMaxRunningTimeMinutes": 720
 }

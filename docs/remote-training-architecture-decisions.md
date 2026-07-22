@@ -155,6 +155,6 @@ raw dataset.zip
 - `dataset_uploads.status=CLIENT_COMPLETED` 表示客户端报告上传完成，但不能提交训练。
 - `dataset_uploads.status=UPLOADED` 表示服务端已收到 OSS `CompleteMultipartUpload` 事件，可以提交训练。
 - 不再要求数据集进入 `READY` 后才能训练。
-- 训练脚本必须在调用 Ultralytics 前写出 `training/jobs/{task_uuid}/dataset/validation_report.json`。
+- 训练脚本必须在调用 Ultralytics 前写出 `train/jobs/{task_uuid}/dataset/validation_report.json`。
 - 后端同步训练结果时，`validation_report.ok=false` 应直接映射为 `training_tasks.status=failed`。
 - 原 `datasets/processed/` 只作为后续可选缓存，不是第一期训练前置条件。

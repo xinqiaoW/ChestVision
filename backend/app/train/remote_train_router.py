@@ -135,6 +135,23 @@ class DlcCallbackRequest(BaseModel):
     token: str = Field(..., description="每个任务独立的 callback token")
 
 
+class RemoteTrainingMetricCallbackRequest(BaseModel):
+    """PAI-DLC 训练容器按 epoch 上报的监控指标。"""
+
+    task_uuid: str = Field(..., description="后端创建的训练任务 UUID")
+    token: str = Field(..., description="每个任务独立的 callback token")
+    epoch: int = Field(..., ge=1, description="当前 epoch，从 1 开始")
+    total_epochs: int | None = Field(None, ge=1, description="总 epoch 数")
+    box_loss: float | None = Field(None, description="train/box_loss")
+    cls_loss: float | None = Field(None, description="train/cls_loss")
+    dfl_loss: float | None = Field(None, description="train/dfl_loss")
+    precision: float | None = Field(None, description="metrics/precision(B)")
+    recall: float | None = Field(None, description="metrics/recall(B)")
+    map50: float | None = Field(None, description="metrics/mAP50(B)")
+    map50_95: float | None = Field(None, description="metrics/mAP50-95(B)")
+    lr: float | None = Field(None, description="学习率")
+
+
 class OssMultipartUploadEventRequest(BaseModel):
     """OSS 分片上传完成事件。
 
@@ -449,6 +466,33 @@ async def handle_dlc_callback(
         )
     except Exception as exc:
         raise _handle_error(exc, "handle_dlc_callback")
+
+
+@router.post("/callbacks/metrics", summary="记录 PAI-DLC 训练指标")
+async def handle_remote_training_metric_callback(
+    request: RemoteTrainingMetricCallbackRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return remote_training_service.handle_metric_callback(
+            db=db,
+            task_uuid=request.task_uuid,
+            token=request.token,
+            epoch=request.epoch,
+            total_epochs=request.total_epochs,
+            metrics={
+                "box_loss": request.box_loss,
+                "cls_loss": request.cls_loss,
+                "dfl_loss": request.dfl_loss,
+                "precision": request.precision,
+                "recall": request.recall,
+                "map50": request.map50,
+                "map50_95": request.map50_95,
+                "lr": request.lr,
+            },
+        )
+    except Exception as exc:
+        raise _handle_error(exc, "handle_remote_training_metric_callback")
 
 
 @router.get("/artifacts/{task_id}", summary="查询训练产物存储位置")

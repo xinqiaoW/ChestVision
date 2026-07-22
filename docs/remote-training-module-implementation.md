@@ -131,9 +131,9 @@ UPLOADED dataset.zip
 `model_artifact_locations` 表示模型和报告的实际存储位置。一个模型版本或训练任务可以同时有多条位置记录，例如：
 
 ```text
-best_weight  -> oss://bucket/training/jobs/.../weights/best.pt
-results_csv  -> oss://bucket/training/jobs/.../results.csv
-eval_report  -> oss://bucket/training/jobs/.../eval_report.json
+best_weight  -> oss://bucket/train/jobs/.../weights/best.pt
+results_csv  -> oss://bucket/train/jobs/.../results.csv
+eval_report  -> oss://bucket/train/jobs/.../eval_report.json
 default_cache -> backend/models/best.pt
 ```
 
@@ -431,6 +431,8 @@ OSS_SECURITY_TOKEN
 OSS_ENDPOINT
 OSS_REGION
 OSS_BUCKET
+PAI_DLC_OSS_ENDPOINT
+PAI_DLC_OSS_URI_HOST
 REMOTE_TRAIN_OSS_PREFIX
 OSS_UPLOAD_URL_EXPIRES_SECONDS
 REMOTE_TRAINING_CALLBACK_SECRET
@@ -454,6 +456,12 @@ OSS_BUCKET=你的接入点alias
 ```
 
 不要把 `OSS_ENDPOINT` 写成某个对象 URL、预签名 URL 或 `oss://bucket/key`。
+
+PAI-DLC `DataSources[].Uri` 会拼为 `oss://{OSS_BUCKET}.{endpoint}/{prefix}`。
+`endpoint` 默认取 `OSS_ENDPOINT` 的 host；如果 DLC 需要使用内网 OSS endpoint，可以单独设置
+`PAI_DLC_OSS_ENDPOINT=https://oss-cn-beijing-internal.aliyuncs.com`，不影响浏览器上传使用的 `OSS_ENDPOINT`。
+如果需要直接使用 OSS 控制台右侧展示的完整 host（bucket/access-point alias + endpoint），可以设置
+`PAI_DLC_OSS_URI_HOST=你的完整内网访问域名`，该变量优先级高于 `PAI_DLC_OSS_ENDPOINT`。
 
 服务启动时会做一次本地环境变量检查：只判断这些变量是否填写，缺失时写 WARNING 日志，
 不会连接 OSS/PAI-DLC，也不会阻止服务启动。接口实际执行时仍会再次强校验必填配置。

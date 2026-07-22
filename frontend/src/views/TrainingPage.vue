@@ -53,12 +53,12 @@
               >监控</el-button
             >
             <el-button
-              v-if="row.status === 'running'"
+              v-if="canCancelTask(row)"
               size="small"
               type="danger"
               text
-              @click="stopTask(row.id)"
-              >停止</el-button
+              @click="stopTask(row)"
+              >取消</el-button
             >
           </template>
         </el-table-column>
@@ -132,23 +132,44 @@
     <el-card v-if="selectedTask" class="monitor-card" shadow="never">
       <template #header>
         <div class="card-header">
-          <span
-            >训练监控 — 任务 {{ selectedTask.task_uuid }}
-            <el-tag
-              :type="statusType(selectedTask.status)"
+          <div class="monitor-title">
+            <span>
+              训练监控 — 任务 {{ selectedTask.task_uuid }}
+              <el-tag
+                :type="statusType(selectedTask.status)"
+                size="small"
+                style="margin-left: 8px"
+                >{{ statusText(selectedTask.status) }}</el-tag
+              >
+            </span>
+            <el-button
+              v-if="canCancelTask(selectedTask)"
               size="small"
-              style="margin-left: 8px"
-              >{{ statusText(selectedTask.status) }}</el-tag
+              type="danger"
+              plain
+              @click="stopTask(selectedTask)"
             >
-          </span>
-          <div class="monitor-info">
-            <span>模型: {{ selectedTask.model_name }}</span>
-            <span>设备: {{ selectedTask.device }}</span>
-            <span
-              >Epoch: {{ selectedTask.current_epoch }}/{{
-                selectedTask.epochs
-              }}</span
+              取消训练
+            </el-button>
+          </div>
+          <div class="monitor-actions">
+            <div class="monitor-info">
+              <span>模型: {{ selectedTask.model_name }}</span>
+              <span>设备: {{ selectedTask.device }}</span>
+              <span
+                >Epoch: {{ selectedTask.current_epoch }}/{{
+                  selectedTask.epochs
+                }}</span
+              >
+            </div>
+            <el-button
+              size="small"
+              :icon="Refresh"
+              :loading="monitorRefreshing"
+              @click="refreshMonitor"
             >
+              {{ monitorRefreshLabel }}
+            </el-button>
           </div>
         </div>
       </template>
@@ -506,6 +527,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 const taskList = ref([]);
 const loadingTasks = ref(false);
 const selectedTask = ref(null);
+const monitorRefreshing = ref(false);
+const lastMonitorRefreshAt = ref(null);
+const refreshClockNow = ref(Date.now());
 const showCreateDialog = ref(false);
 const creating = ref(false);
 const lossChartRef = ref(null);
@@ -513,6 +537,17 @@ const mapChartRef = ref(null);
 let lossChart = null,
   mapChart = null;
 let pollTimer = null;
+let refreshClockTimer = null;
+const MONITOR_POLL_INTERVAL_MS = 5000;
+const TERMINAL_TRAINING_STATUSES = [
+  "completed",
+  "succeeded",
+  "finished",
+  "failed",
+  "cancelled",
+  "stopped",
+  "aborted",
+];
 
 // 数据集管理
 const datasetList = ref([]);
@@ -636,6 +671,11 @@ const evalMetricCards = computed(() => {
   ];
 });
 
+const monitorRefreshLabel = computed(() => {
+  if (!lastMonitorRefreshAt.value) return "刷新";
+  return `刷新 · ${formatRefreshAge(lastMonitorRefreshAt.value, refreshClockNow.value)}前`;
+});
+
 const perClassData = computed(() => {
   if (!evalReport.value) return [];
   const pc = evalReport.value.per_class || {};
@@ -653,8 +693,12 @@ function statusType(s) {
     pending: "info",
     running: "warning",
     completed: "success",
+    succeeded: "success",
+    finished: "success",
     failed: "danger",
     cancelled: "info",
+    stopped: "info",
+    aborted: "info",
   };
   return m[s] || "info";
 }
@@ -663,10 +707,25 @@ function statusText(s) {
     pending: "等待中",
     running: "训练中",
     completed: "已完成",
+    succeeded: "已完成",
+    finished: "已完成",
     failed: "失败",
     cancelled: "已取消",
+    stopped: "已停止",
+    aborted: "已中止",
   };
   return m[s] || s;
+}
+
+function canCancelTask(task) {
+  return Boolean(task) && shouldPollMonitorTask(task);
+}
+
+function shouldPollMonitorTask(task) {
+  return (
+    Boolean(task) &&
+    !TERMINAL_TRAINING_STATUSES.includes(String(task.status || "").toLowerCase())
+  );
 }
 
 async function fetchTasks() {
@@ -683,13 +742,18 @@ async function fetchTasks() {
 
 async function selectTask(task) {
   selectedTask.value = task;
+  lastMonitorRefreshAt.value = null;
   await nextTick();
   // 延迟初始化图表，确保 Element Plus 组件完成布局
   setTimeout(() => {
     initCharts();
   }, 100);
-  fetchMetrics();
-  startPolling();
+  await refreshMonitor();
+  if (shouldPollMonitorTask(selectedTask.value)) {
+    startPolling();
+  } else {
+    stopPolling();
+  }
 }
 
 function initCharts() {
@@ -710,22 +774,63 @@ function handleChartResize() {
   if (mapChart && !mapChart.isDisposed()) mapChart.resize();
 }
 
-async function fetchMetrics() {
+async function refreshMonitor() {
+  await fetchMetrics({ force: true });
+}
+
+async function fetchMetrics({ force = false } = {}) {
   if (!selectedTask.value) return;
+  if (!force && !shouldPollMonitorTask(selectedTask.value)) {
+    stopPolling();
+    return;
+  }
+  if (monitorRefreshing.value) return;
+  monitorRefreshing.value = true;
   try {
     const taskId = selectedTask.value.id || selectedTask.value.task?.id;
     const res = await request.get(`/training/metrics/${taskId}`, {
       silent: true,
     });
     const metrics = res.metrics || [];
-    const statusRes = await request.get(`/training/status/${taskId}`, {
+    const statusUrl = isRemoteTask(selectedTask.value)
+      ? `/training/remote/status/${taskId}`
+      : `/training/status/${taskId}`;
+    const statusRes = await request.get(statusUrl, {
       silent: true,
     });
-    if (statusRes) selectedTask.value = { ...selectedTask.value, ...statusRes };
+    if (statusRes) {
+      selectedTask.value = normalizeTaskStatus(selectedTask.value, statusRes);
+    }
     if (metrics.length > 0) updateCharts(metrics);
+    lastMonitorRefreshAt.value = Date.now();
+    refreshClockNow.value = Date.now();
+    if (!shouldPollMonitorTask(selectedTask.value)) {
+      stopPolling();
+    }
   } catch (e) {
     console.error("获取指标失败", e);
+  } finally {
+    monitorRefreshing.value = false;
   }
+}
+
+function isRemoteTask(task) {
+  return task?.device === "remote" || Boolean(task?.remote);
+}
+
+function normalizeTaskStatus(currentTask, statusRes) {
+  if (statusRes.task) {
+    return {
+      ...currentTask,
+      ...statusRes.task,
+      latest_metric: statusRes.latest_metric,
+      is_running: statusRes.is_running,
+    };
+  }
+  return {
+    ...currentTask,
+    ...statusRes,
+  };
 }
 
 function updateCharts(metrics) {
@@ -816,9 +921,14 @@ function updateCharts(metrics) {
 
 function startPolling() {
   stopPolling();
+  if (!shouldPollMonitorTask(selectedTask.value)) return;
   pollTimer = setInterval(() => {
-    if (selectedTask.value) fetchMetrics();
-  }, 5000);
+    if (shouldPollMonitorTask(selectedTask.value)) {
+      fetchMetrics();
+    } else {
+      stopPolling();
+    }
+  }, MONITOR_POLL_INTERVAL_MS);
 }
 function stopPolling() {
   if (pollTimer) {
@@ -1033,17 +1143,25 @@ function formatDuration(value) {
   return `${minutes}m ${rest}s`;
 }
 
-onMounted(() => {
-  fetchTasks();
-  fetchDatasets();
-});
+function formatRefreshAge(lastAt, now) {
+  const seconds = Math.max(Math.floor((now - lastAt) / 1000), 0);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}分钟`;
+}
 
-async function stopTask(taskId) {
+async function stopTask(task) {
   try {
-    await ElMessageBox.confirm("确定要停止训练吗？", "确认停止", {
+    await ElMessageBox.confirm("确定要取消训练吗？", "确认取消", {
       type: "warning",
+      confirmButtonText: "取消训练",
+      cancelButtonText: "关闭",
     });
-    await request.post(`/training/stop/${taskId}`);
+    const taskId = task.id || task.task?.id;
+    const stopUrl = isRemoteTask(task)
+      ? `/training/remote/stop/${taskId}`
+      : `/training/stop/${taskId}`;
+    await request.post(stopUrl);
     ElMessage.success("已停止");
     await fetchTasks();
   } catch (e) {
@@ -1149,6 +1267,9 @@ onMounted(() => {
   fetchTasks();
   fetchDatasets();
   fetchModelVersions();
+  refreshClockTimer = setInterval(() => {
+    refreshClockNow.value = Date.now();
+  }, 1000);
 });
 
 // ── 模型版本管理 ──
@@ -1179,6 +1300,10 @@ async function setDefaultModel(modelVersionId) {
 
 onBeforeUnmount(() => {
   stopPolling();
+  if (refreshClockTimer) {
+    clearInterval(refreshClockTimer);
+    refreshClockTimer = null;
+  }
   window.removeEventListener("resize", handleChartResize);
   if (lossChart) lossChart.dispose();
   if (mapChart) mapChart.dispose();
@@ -1200,12 +1325,20 @@ onBeforeUnmount(() => {
   font-size: 22px;
 }
 .card-header {
+  gap: 12px;
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
+.monitor-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .monitor-info {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   font-size: 13px;
   color: #909399;
