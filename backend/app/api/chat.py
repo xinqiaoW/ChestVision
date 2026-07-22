@@ -268,18 +268,20 @@ async def chat_stream(
                                 f"({r.confidence:.0%})"
                                 for r in details[:10]
                             )
+                            # ⭐ 修复：上下文注入使用中性措辞，避免污染 Supervisor 关键词路由
+                            #   "刚才/检测/诊断/报告/什么是" 等词会误导 Supervisor 做出错误路由决策
                             final_message = (
-                                f"「上下文」用户刚才完成了胸片检测，"
-                                f"真实检测结果为：共{last_task.total_objects}个病灶 → {lesion_list}。"
-                                f"现在用户问：「{enhanced_message}」。"
-                                f"请基于以上真实检测数据回答，不要编造其他病灶类型。"
+                                f"[系统上下文] 用户此前已完成胸片检测，"
+                                f"检测数据：共{last_task.total_objects}个病灶 → {lesion_list}。"
+                                f"用户当前询问：「{enhanced_message}」。"
+                                f"请基于上述检测数据回答，勿编造其他病灶类型。"
                             )
                             logger.info("注入检测上下文: task=%d, lesions=%s", last_task.id, lesion_list)
                         else:
                             final_message = (
-                                f"「上下文」你与用户已有对话历史。"
-                                f"现在用户继续问：「{enhanced_message}」。"
-                                f"请基于对话历史直接回答，不要索要图片、不要编造数据。"
+                                f"[系统上下文] 你与用户已有对话历史。"
+                                f"用户当前继续询问：「{enhanced_message}」。"
+                                f"请基于对话历史直接回答，勿索要图片、勿编造数据。"
                             )
                     finally:
                         db2.close()

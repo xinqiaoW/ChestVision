@@ -142,6 +142,135 @@ def _load_detection_from_db(state: dict) -> dict | None:
         logger.warning("从DB加载检测结果失败: %s", str(e))
         return None
 
+
+def _build_user_identity_context(state: dict) -> str:
+    """构建用户身份上下文，供 summarize_node 回答"我是谁"等问题
+
+    从 state 和 DB 中提取：
+      - 登录用户名
+      - 绑定的患者档案（patient_code）
+      - 用户角色（医生/患者/管理员）
+    """
+    user_id = state.get("user_id", 0)
+    patient_profile_id = state.get("patient_profile_id")
+    if not user_id:
+        return ""
+
+    try:
+        from app.database.session import SessionLocal
+        from app.entity.db_models import PatientProfile, User
+
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                return ""
+
+            parts = ["[系统数据] 当前用户信息："]
+            parts.append(f"- 用户名：{user.username}")
+
+            # 角色
+            role_labels = {"admin": "管理员", "doctor": "医生", "patient": "患者"}
+            role_cn = role_labels.get(user.user_type, user.user_type or "未知")
+            parts.append(f"- 角色：{role_cn}")
+
+            # 患者档案
+            profile = None
+            if patient_profile_id:
+                profile = db.query(PatientProfile).filter(
+                    PatientProfile.id == patient_profile_id
+                ).first()
+            elif user.user_type == "patient":
+                profile = db.query(PatientProfile).filter(
+                    PatientProfile.user_id == user_id
+                ).first()
+
+            if profile:
+                parts.append(f"- 关联患者编号：{profile.patient_code}")
+                if profile.real_name:
+                    parts.append(f"- 患者姓名：{profile.real_name}")
+                if profile.gender:
+                    parts.append(f"- 性别：{profile.gender}")
+                if profile.age:
+                    parts.append(f"- 年龄：{profile.age}岁")
+
+            return "\n".join(parts)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("构建用户身份上下文失败: %s", str(e))
+        return ""
+
+
+def _build_conversation_context(state: dict, max_turns: int = 5) -> str:
+    """从 state.messages 中提取最近 N 轮对话上下文
+
+    供 summarize_node 兜底分支使用，实现多轮对话检索。
+    过滤掉系统注入的上下文标记和附件路径标记。
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return ""
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    # 只取最近的 N 轮（一轮 = 用户消息 + AI 回复）
+    recent_pairs: list[tuple[str, str]] = []
+    temp_user = ""
+    for msg in reversed(messages):
+        if len(recent_pairs) >= max_turns:
+            break
+        if isinstance(msg, HumanMessage):
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            # 过滤系统注入的上下文（[系统上下文]、[系统数据] 等标记）
+            if content.startswith("[系统") or content.startswith("「"):
+                # 尝试提取用户真正的问题
+                for marker in ["现在用户问：「", "用户当前询问：「", "用户问：「"]:
+                    if marker in content:
+                        idx = content.find(marker) + len(marker)
+                        end_idx = content.find("」", idx)
+                        if end_idx > idx:
+                            content = content[idx:end_idx]
+                        else:
+                            content = content[idx:]
+                        break
+            # 清理附件路径标记
+            import re
+            content = re.sub(r'\[附件(?:图片|多张图片|视频|ZIP)路径:[^\]]*\]', '', content).strip()
+            if content:
+                temp_user = content
+        elif isinstance(msg, AIMessage):
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            content = content.strip()
+            if content and temp_user:
+                recent_pairs.append((temp_user, content[:200]))  # AI 回复截断
+                temp_user = ""
+
+    if not recent_pairs:
+        return ""
+
+    # 反转回时间顺序
+    recent_pairs.reverse()
+    lines = []
+    for i, (user_msg, ai_msg) in enumerate(recent_pairs, 1):
+        lines.append(f"第{i}轮 - 用户: {user_msg}")
+        lines.append(f"第{i}轮 - AI: {ai_msg}")
+    return "\n".join(lines)
+
+
+def _check_medical_context(conversation_context: str) -> bool:
+    """检查对话上下文中是否包含医学/检测相关的话题
+
+    如果对话历史中涉及胸片、检测、诊断等，则保持医学助手模式。
+    """
+    medical_keywords = [
+        "胸片", "检测", "病灶", "诊断", "骨折", "结节", "肿块",
+        "肺", "X光", "影像", "钙化", "气胸", "积液", "实变",
+        "患者", "医生", "报告", "病史", "风险", "治疗",
+    ]
+    return any(kw in conversation_context for kw in medical_keywords)
+
+
 # ══════════════════════════════════════════════════════════════
 # 辅助函数
 # ══════════════════════════════════════════════════════════════
@@ -343,7 +472,7 @@ def _persist_detection_task(
     """将检测结果持久化到数据库"""
     try:
         from app.database.session import SessionLocal
-        from app.entity.db_models import DetectionTask, PatientProfile
+        from app.entity.db_models import DetectionScene, DetectionTask, PatientProfile
 
         db = SessionLocal()
         try:
@@ -356,8 +485,29 @@ def _persist_detection_task(
                 if profile:
                     profile_id = profile.id
 
+            # ⭐ 关键修复：获取胸片检测场景 ID（scene_id 是 NOT NULL 字段）
+            #  之前缺失导致所有检测入库静默失败，二次查询返回了错误的历史记录
+            scene = db.query(DetectionScene).filter(
+                DetectionScene.name == "chest_xray",
+                DetectionScene.is_active == True,
+            ).first()
+            if not scene:
+                # 兜底：取任意 medical 分类的活跃场景
+                scene = db.query(DetectionScene).filter(
+                    DetectionScene.category == "medical",
+                    DetectionScene.is_active == True,
+                ).first()
+            if not scene:
+                # 最终兜底：取第一个活跃场景
+                scene = db.query(DetectionScene).filter(
+                    DetectionScene.is_active == True,
+                ).first()
+
+            scene_id = scene.id if scene else 1
+
             task = DetectionTask(
                 user_id=user_id,
+                scene_id=scene_id,  # ⭐ 之前缺失，导致入库静默失败
                 patient_profile_id=profile_id,
                 task_type="single",
                 status="completed",
@@ -371,7 +521,7 @@ def _persist_detection_task(
             db.add(task)
             db.commit()
             db.refresh(task)
-            logger.info("检测任务已入库: task_id=%d, user=%d", task.id, user_id)
+            logger.info("检测任务已入库: task_id=%d, user=%d, scene=%d", task.id, user_id, scene_id)
         finally:
             db.close()
     except Exception as e:
@@ -695,7 +845,7 @@ async def summarize_node(state: dict, llm: ChatOpenAI = None) -> dict:
       - 来自 diagnosis → 输出综合诊断意见
       - 来自 report   → 输出完整报告
       - 来自 qa       → 输出知识问答结果
-      - 其他          → 由 LLM 根据 state 自动生成回复
+      - 其他（含身份/简单回顾）→ 由 LLM 根据 state + 用户上下文生成回复
     """
     final_response = ""
     knowledge_sources = state.get("knowledge_sources", [])
@@ -751,18 +901,98 @@ async def summarize_node(state: dict, llm: ChatOpenAI = None) -> dict:
                 f"> ⚠️ 本结果仅供参考，请结合临床症状综合判断。"
             )
     else:
-        # 无特殊产出，由 LLM 生成通用回复
+        # ══════════════════════════════════════════════════════
+        # 兜底分支：所有关键词不匹配 → 普通大模型问答模式
+        #
+        # 设计思路：
+        #   1. 判断当前对话是否在医学/检测上下文中
+        #      - 有历史检测数据 → 保留医学助手定位
+        #      - 纯普通对话 → 切换为通用 AI 助手
+        #   2. 始终注入对话历史上下文（多轮对话检索）
+        #   3. 始终注入用户身份上下文（回答"我是谁"）
+        # ══════════════════════════════════════════════════════
         user_msg = _get_user_message(state)
+        user_id = state.get("user_id", 0)
+
+        # ── ① 构建对话历史上下文（多轮对话检索）──
+        conversation_context = _build_conversation_context(state)
+
+        # ── ② 构建用户身份上下文 ──
+        user_context = _build_user_identity_context(state)
+
+        # ── ③ 尝试从 DB 加载检测结果 ──
+        db_detection = _load_detection_from_db(state)
+        detection_context = ""
+        has_medical_context = False
+        if db_detection and db_detection.get("total_objects", 0) > 0:
+            has_medical_context = True
+            total = db_detection.get("total_objects", 0)
+            class_counts = db_detection.get("class_counts", {})
+            lesion_items = "、".join(
+                f"{LESION_CN_MAP.get(k, k)}×{v}" for k, v in sorted(class_counts.items())
+            )
+            detection_context = (
+                f"\n[系统数据] 用户最近一次胸片检测结果：共{total}个病灶 → {lesion_items}。"
+            )
+
+        # ── ④ 检查对话历史中是否有医学检测相关上下文 ──
+        if not has_medical_context and conversation_context:
+            has_medical_context = _check_medical_context(conversation_context)
+
         try:
             if llm is None:
                 from app.agent.detection_agent import create_llm
                 llm = create_llm()
 
+            # ── ⑤ 根据上下文类型选择 System Prompt ──
+            if has_medical_context:
+                # 医学上下文模式：保持医学助手定位
+                system_parts = [
+                    "你是胸部X光影像AI诊断助手，同时也能进行一般对话。",
+                    "请用中文简洁回复用户。",
+                ]
+                if user_context:
+                    system_parts.append(user_context)
+                if detection_context:
+                    system_parts.append(detection_context)
+                if conversation_context:
+                    system_parts.append(f"\n## 对话历史上下文\n{conversation_context}")
+                system_parts.append(
+                    "如果用户询问身份信息，请根据上下文中的用户信息直接回答。"
+                    "如果用户询问检测结果，请基于系统数据中的检测结果简洁列出病灶。"
+                    "如果是与医学/检测无关的一般对话，请自然地回答用户问题。"
+                )
+            else:
+                # 纯普通对话模式：切换为通用 AI 助手
+                system_parts = [
+                    "你是一个智能AI助手，可以进行各种类型的对话和问答。",
+                    "请用中文自然、友好地回复用户。",
+                    "你有以下对话上下文信息，请在回答时参考：",
+                ]
+                if user_context:
+                    system_parts.append(f"\n## 当前用户信息\n{user_context}")
+                if conversation_context:
+                    system_parts.append(f"\n## 对话历史\n{conversation_context}")
+                system_parts.append(
+                    "\n## 回复原则\n"
+                    "- 如果用户询问身份信息（如'我是谁'），根据用户信息直接回答。\n"
+                    "- 对于一般知识问答、闲聊等，自由自然地回答。\n"
+                    "- 不要主动提及医学检测，除非用户明确询问。\n"
+                    "- 保持回答简洁、准确、有帮助。"
+                )
+
+            system_content = "\n".join(system_parts)
+
+            logger.info(
+                "Summarize 兜底模式: medical=%s, user_ctx=%s, conv_ctx=%s, det_ctx=%s",
+                has_medical_context,
+                bool(user_context),
+                bool(conversation_context),
+                bool(detection_context),
+            )
+
             response = await llm.ainvoke([
-                SystemMessage(content=(
-                    "你是胸部X光影像AI诊断助手。请用中文简洁回复用户。"
-                    "如果用户没有上传胸片，引导用户上传胸片进行检测。"
-                )),
+                SystemMessage(content=system_content),
                 HumanMessage(content=user_msg),
             ])
             final_response = response.content if hasattr(response, "content") else str(response)

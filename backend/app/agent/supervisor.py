@@ -100,16 +100,46 @@ class SupervisorAgent:
             return "detection"
 
         # ══════════════════════════════════════════════════════
+        # 0. 身份/会话类问题 → summarize（最高优先级，避免被后续规则误判）
+        #   "我是谁/我叫什么" 是身份询问，不是医学诊断
+        # ══════════════════════════════════════════════════════
+        identity_keywords = [
+            "我是谁", "我叫什么", "我的名字", "你是谁",
+            "你叫什么", "你的名字", "我在和谁",
+        ]
+        if any(kw in message for kw in identity_keywords):
+            return "summarize"
+
+        # ══════════════════════════════════════════════════════
+        # 0.5 简单回顾类问题 → summarize（只需展示已有结果，无需完整诊断）
+        #   区别于 diagnosis：用户只是想"查看"结果，而非"分析"病情
+        # ══════════════════════════════════════════════════════
+        simple_recall_keywords = [
+            "检测出什么", "检测到什么", "检测出哪些", "检测到哪些",
+            "检测出什么病", "检测出哪些病", "检测出什么病症",
+            "查一下我的检测", "看看我的检测", "我的检测结果是什么",
+            "检测结果是什么", "我检测出了什么", "什么病症",
+            "什么病灶", "有哪些病灶", "检出了什么",
+        ]
+        if any(kw in message for kw in simple_recall_keywords):
+            # 如果有检测结果，直接汇总展示，不走完整诊断流程
+            detection_result = state.get("detection_result", {})
+            if detection_result and detection_result.get("total_objects", -1) >= 0:
+                return "summarize"
+            # state 中没有结果，尝试从 DB 加载（summarize_node 中有 _load_detection_from_db 兜底）
+            return "summarize"
+
+        # ══════════════════════════════════════════════════════
         # 1.5 回顾性查询 → diagnosis（优先于 detection 判断）
         #   用户明确在引用之前的检测结果，不应重新检测
         # ══════════════════════════════════════════════════════
         retrospective_keywords = [
-            "刚才", "刚刚", "我的结果", "检测结果", "我的检测",
+            "刚才", "刚刚", "我的检测",
             "我的胸片", "我的报告", "上次", "之前的",
             "据此", "基于此", "根据结果", "结合结果",
-            "对我", "生活建议", "注意事项", "从检测",
+            "对我", "生活建议", "注意事项",
             "从结果", "根据检测", "我的病情",
-            "患有什么", "得了什么", "什么病", "需要注意",
+            "患有什么", "得了什么", "需要注意",
         ]
         if any(kw in message for kw in retrospective_keywords):
             # 检测 state 中是否有结果；即便没有也走 diagnosis
@@ -119,7 +149,8 @@ class SupervisorAgent:
                 return "diagnosis"
             # 无 state 结果但消息明显在回顾 → 走 LLM 语义路由进一步判断
             # 不放行到 detection，避免误判
-            if any(kw in message for kw in ["检测结果", "从检测", "从结果", "根据检测", "我的结果"]):
+            if any(kw in message for kw in ["检测结果", "从检测", "从结果", "根据检测", "我的结果",
+                                              "检测出的", "检测到的", "检测出", "检测到"]):
                 return "diagnosis"
             # 其他回顾类关键词走 LLM 路由
 
