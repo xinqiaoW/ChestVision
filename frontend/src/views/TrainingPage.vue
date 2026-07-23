@@ -18,7 +18,12 @@
           >
         </div>
       </template>
-      <el-table :data="taskList" stripe v-loading="loadingTasks">
+      <el-table
+        class="task-table"
+        :data="taskList"
+        stripe
+        v-loading="loadingTasks"
+      >
         <el-table-column prop="task_uuid" label="任务 ID" width="100" />
         <el-table-column prop="model_name" label="模型" width="110" />
         <el-table-column prop="device" label="设备" width="80" />
@@ -52,7 +57,11 @@
         <el-table-column prop="created_at" label="创建时间" width="170" />
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" type="primary" text @click="selectTask(row)"
+            <el-button
+              class="monitor-action-button"
+              size="small"
+              text
+              @click="selectTask(row)"
               >监控</el-button
             >
             <el-button
@@ -1081,5 +1090,28 @@ onBeforeUnmount(() => {
 .action-card,
 .eval-card {
   margin-bottom: 20px;
+}
+.task-list-card {
+  width: 100%;
+}
+.task-list-card :deep(.el-card__body) {
+  box-sizing: border-box;
+  width: 100%;
+}
+.task-table {
+  width: 100%;
+}
+.monitor-action-button.el-button.is-text,
+.monitor-action-button.el-button.is-text:not(.is-disabled):hover,
+.monitor-action-button.el-button.is-text:not(.is-disabled):focus,
+.monitor-action-button.el-button.is-text:not(.is-disabled):active {
+  --el-button-active-bg-color: transparent;
+  --el-button-hover-bg-color: transparent;
+  --el-button-hover-border-color: transparent;
+  background: transparent;
+  background-color: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--el-color-primary);
 }
 </style>
