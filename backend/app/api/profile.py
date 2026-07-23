@@ -16,6 +16,7 @@ from app.database.session import SessionLocal
 from app.entity.db_models import (
     DetectionTask,
     DoctorPatientRelation,
+    DoctorProfile,
     MedicalRecord,
     ModelVersion,
     PatientProfile,
@@ -24,7 +25,9 @@ from app.entity.db_models import (
 from app.entity.schemas import (
     AdminProfileStats,
     ChangePassword,
+    DoctorProfileResponse,
     DoctorProfileStats,
+    DoctorProfileUpdate,
     PatientProfileResponse,
     PatientProfileUpdate,
     UserProfileUpdate,
@@ -41,6 +44,7 @@ router = APIRouter(prefix="/api/profile", tags=["个人中心"])
 # ══════════════════════════════════════════════════════════════
 # 一、基本信息
 # ══════════════════════════════════════════════════════════════
+
 
 @router.put("/me", response_model=UserResponse, summary="更新个人信息")
 def update_my_profile(
@@ -59,18 +63,14 @@ def update_my_profile(
         # 检查用户名唯一性
         if "username" in update_data and update_data["username"] != user.username:
             existing = (
-                db.query(User)
-                .filter(User.username == update_data["username"])
-                .first()
+                db.query(User).filter(User.username == update_data["username"]).first()
             )
             if existing:
                 raise HTTPException(status_code=409, detail="用户名已被使用")
 
         # 检查邮箱唯一性
         if "email" in update_data and update_data["email"] != user.email:
-            existing = (
-                db.query(User).filter(User.email == update_data["email"]).first()
-            )
+            existing = db.query(User).filter(User.email == update_data["email"]).first()
             if existing:
                 raise HTTPException(status_code=409, detail="邮箱已被使用")
 
@@ -117,7 +117,12 @@ def change_my_password(
 # 二、患者档案（仅 patient 角色）
 # ══════════════════════════════════════════════════════════════
 
-@router.get("/me/patient-profile", response_model=PatientProfileResponse, summary="获取我的患者档案")
+
+@router.get(
+    "/me/patient-profile",
+    response_model=PatientProfileResponse,
+    summary="获取我的患者档案",
+)
 def get_my_patient_profile(current_user=Depends(get_current_user)):
     """获取当前患者用户的健康档案"""
     db = SessionLocal()
@@ -134,7 +139,11 @@ def get_my_patient_profile(current_user=Depends(get_current_user)):
         db.close()
 
 
-@router.put("/me/patient-profile", response_model=PatientProfileResponse, summary="更新我的患者档案")
+@router.put(
+    "/me/patient-profile",
+    response_model=PatientProfileResponse,
+    summary="更新我的患者档案",
+)
 def update_my_patient_profile(
     data: PatientProfileUpdate,
     current_user=Depends(get_current_user),
@@ -164,8 +173,80 @@ def update_my_patient_profile(
 
 
 # ══════════════════════════════════════════════════════════════
-# 三、个人中心统计（按角色）
+# 三、医生执业档案（仅 doctor 角色）
 # ══════════════════════════════════════════════════════════════
+
+
+@router.get(
+    "/me/doctor-profile",
+    response_model=DoctorProfileResponse,
+    summary="获取我的医生执业档案",
+)
+def get_my_doctor_profile(current_user=Depends(get_current_user)):
+    """获取当前医生用户的执业档案"""
+    db = SessionLocal()
+    try:
+        profile = (
+            db.query(DoctorProfile)
+            .filter(DoctorProfile.user_id == current_user.id)
+            .first()
+        )
+        if not profile:
+            # 如果还没有档案，自动创建一个空的
+            profile = DoctorProfile(
+                user_id=current_user.id,
+                display_name=current_user.username,  # 默认使用用户名
+            )
+            db.add(profile)
+            db.commit()
+            db.refresh(profile)
+        return profile
+    finally:
+        db.close()
+
+
+@router.put(
+    "/me/doctor-profile",
+    response_model=DoctorProfileResponse,
+    summary="更新我的医生执业档案",
+)
+def update_my_doctor_profile(
+    data: DoctorProfileUpdate,
+    current_user=Depends(get_current_user),
+):
+    """更新当前医生用户的执业档案"""
+    db = SessionLocal()
+    try:
+        profile = (
+            db.query(DoctorProfile)
+            .filter(DoctorProfile.user_id == current_user.id)
+            .first()
+        )
+        if not profile:
+            profile = DoctorProfile(
+                user_id=current_user.id,
+                display_name=data.display_name or current_user.username,
+            )
+            db.add(profile)
+            db.flush()
+
+        update_data = data.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(profile, key, value)
+
+        db.commit()
+        db.refresh(profile)
+
+        logger.info("医生 %s 更新了执业档案", current_user.username)
+        return profile
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════
+# 四、个人中心统计（按角色）
+# ══════════════════════════════════════════════════════════════
+
 
 @router.get("/stats", summary="获取个人中心统计数据")
 def get_profile_stats(current_user=Depends(get_current_user)):
@@ -186,9 +267,7 @@ def get_profile_stats(current_user=Depends(get_current_user)):
                 .scalar()
                 or 0
             )
-            total_detections = (
-                db.query(func.count(DetectionTask.id)).scalar() or 0
-            )
+            total_detections = db.query(func.count(DetectionTask.id)).scalar() or 0
             total_models = db.query(func.count(ModelVersion.id)).scalar() or 0
 
             return AdminProfileStats(
@@ -226,9 +305,7 @@ def get_profile_stats(current_user=Depends(get_current_user)):
 
             total_records = (
                 db.query(func.count(MedicalRecord.id))
-                .filter(
-                    MedicalRecord.created_by == current_user.id
-                )
+                .filter(MedicalRecord.created_by == current_user.id)
                 .scalar()
                 or 0
             )

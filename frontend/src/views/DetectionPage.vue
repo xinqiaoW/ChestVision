@@ -437,8 +437,10 @@ async function startDetect() {
 
     if (res.total_objects > 0) {
       ElMessage.success(`检测完成，发现 ${res.total_objects} 个病灶`);
-      recommendationTaskId.value = res.task_id;
-      recommendationVisible.value = true;
+      if (userStore.userType === "patient") {
+        recommendationTaskId.value = res.task_id;
+        recommendationVisible.value = true;
+      }
     } else {
       ElMessage.success("检测完成，未发现明显病灶");
     }

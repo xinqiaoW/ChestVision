@@ -17,6 +17,7 @@ from app.entity.db_models import (
     DetectionResult,
     DetectionTask,
     DoctorPatientRelation,
+    DoctorProfile,
     DoctorRecommendation,
     MedicalRecord,
     PatientProfile,
@@ -111,6 +112,15 @@ def _doctor_candidates(db: Session, current_user_id: int) -> list[dict]:
             .all()
         )
 
+    # 批量查询所有医生的执业档案
+    doctor_ids = [d.id for d in doctors]
+    profiles = {
+        p.user_id: p
+        for p in db.query(DoctorProfile)
+        .filter(DoctorProfile.user_id.in_(doctor_ids))
+        .all()
+    }
+
     candidates = []
     for doctor in doctors:
         records = (
@@ -131,10 +141,22 @@ def _doctor_candidates(db: Session, current_user_id: int) -> list[dict]:
         )
         chat = _chat_context(db, doctor.id, limit=20)
         self_statements = [m["content"] for m in chat if m["role"] == "user"]
+
+        # 优先使用医生执业档案中的真实姓名，兜底使用用户名
+        profile = profiles.get(doctor.id)
+        real_display_name = (
+            profile.display_name
+            if profile and profile.display_name and profile.display_name.strip()
+            else doctor.username
+        )
+        real_specialty = profile.specialty if profile and profile.specialty else None
+
         candidates.append(
             {
                 "doctor_id": doctor.id,
                 "account_name": doctor.username,
+                "display_name": real_display_name,
+                "specialty": real_specialty,
                 "avatar": doctor.avatar,
                 "email": doctor.email,
                 "phone": doctor.phone,
@@ -256,8 +278,9 @@ def _fallback_recommendations(
         ranked.append(
             {
                 "doctor_id": doctor["doctor_id"],
-                "display_name": doctor["account_name"],
-                "specialty": lesion_hints[0] if lesion_hints else "胸部影像诊断",
+                "display_name": doctor.get("display_name") or doctor["account_name"],
+                "specialty": doctor.get("specialty")
+                or (lesion_hints[0] if lesion_hints else "胸部影像诊断"),
                 "match_score": round(max(score, 45), 1),
                 "matched_lesions": lesions,
                 "reasons": [
@@ -350,11 +373,11 @@ def generate_recommendations(
                 HumanMessage(
                     content=(
                         json.dumps(payload, ensure_ascii=False)
-                        + "\n输出格式：{\"recommendations\":[{\"doctor_id\":1,"
-                        "\"display_name\":\"李医生\",\"specialty\":\"胸部影像\","
-                        "\"match_score\":90,\"matched_lesions\":[\"Nodule\"],"
-                        "\"reasons\":[\"理由1\",\"理由2\"],\"summary\":\"推荐说明\"}],"
-                        "\"context_summary\":\"本次匹配实际使用了哪些上下文\"}"
+                        + '\n输出格式：{"recommendations":[{"doctor_id":1,'
+                        '"display_name":"李医生","specialty":"胸部影像",'
+                        '"match_score":90,"matched_lesions":["Nodule"],'
+                        '"reasons":["理由1","理由2"],"summary":"推荐说明"}],'
+                        '"context_summary":"本次匹配实际使用了哪些上下文"}'
                     )
                 ),
             ]
@@ -369,13 +392,16 @@ def generate_recommendations(
                 continue
             seen.add(doctor_id)
             source = allowed[doctor_id]
+
+            # 严禁使用大模型编造的姓名：永远使用数据库中医生本人设置的真实姓名
+            safe_display_name = source.get("display_name") or source["account_name"]
+
             recommendations.append(
                 {
                     "doctor_id": doctor_id,
-                    "display_name": _compact(
-                        item.get("display_name") or source["account_name"], 100
-                    ),
+                    "display_name": safe_display_name,
                     "specialty": _compact(item.get("specialty"), 200)
+                    or source.get("specialty")
                     or "胸部影像诊断",
                     "match_score": round(
                         max(0, min(float(item.get("match_score", 0)), 100)), 1
@@ -480,21 +506,15 @@ def generate_recommendations(
         "model_name": model_name,
         "context_used": {
             "lesions": sum(lesion_counter.values()),
-            "operator_messages": len(
-                patient_context.get("operator_conversation", [])
-            ),
-            "patient_messages": len(
-                patient_context.get("patient_conversation", [])
-            ),
+            "operator_messages": len(patient_context.get("operator_conversation", [])),
+            "patient_messages": len(patient_context.get("patient_conversation", [])),
             "medical_records": len(patient_context.get("patient_history", [])),
             "conversation_messages": len(
                 patient_context.get("operator_conversation", [])
             )
             + len(patient_context.get("patient_conversation", [])),
             "patient_records": len(patient_context.get("patient_history", [])),
-            "previous_detections": len(
-                patient_context.get("previous_detections", [])
-            ),
+            "previous_detections": len(patient_context.get("previous_detections", [])),
             "doctor_candidates": len(candidates),
             "doctor_self_statements": sum(
                 len(item["self_described_profile_from_conversation"])

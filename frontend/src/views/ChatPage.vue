@@ -612,7 +612,11 @@ async function sendMsg() {
         if (result.task_id) {
           latestDetectionTaskId.value = result.task_id;
         }
-        if (result.total_objects > 0 && result.task_id) {
+        if (
+          result.total_objects > 0 &&
+          result.task_id &&
+          userStore.userType === "patient"
+        ) {
           recommendationTaskId.value = result.task_id;
           recommendationVisible.value = true;
         }
@@ -814,7 +818,7 @@ async function quickDetect(type) {
       if (completedTaskId) {
         latestDetectionTaskId.value = completedTaskId;
       }
-      if (recommendableResult) {
+      if (recommendableResult && userStore.userType === "patient") {
         recommendationTaskId.value = recommendableResult.task_id;
         recommendationVisible.value = true;
       }

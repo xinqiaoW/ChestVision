@@ -76,6 +76,21 @@ export function updatePatientProfileApi(data) {
 }
 
 /**
+ * 获取我的医生执业档案
+ */
+export function getDoctorProfileApi() {
+  return request.get("/profile/me/doctor-profile");
+}
+
+/**
+ * 更新我的医生执业档案
+ * @param {Object} data - { display_name, specialty, department, title, hospital, introduction, consultation_hours }
+ */
+export function updateDoctorProfileApi(data) {
+  return request.put("/profile/me/doctor-profile", data);
+}
+
+/**
  * 获取个人中心统计数据
  */
 export function getProfileStatsApi() {

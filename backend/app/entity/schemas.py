@@ -122,6 +122,7 @@ class ChangePassword(BaseModel):
 
 # --- 患者健康档案（个人中心用）---
 
+
 class PatientProfileResponse(BaseModel):
     """患者档案响应"""
 
@@ -162,8 +163,43 @@ class PatientProfileUpdate(BaseModel):
     emergency_phone: Optional[str] = None
 
 
+# --- 医生执业档案（个人中心用）---
+
+
+class DoctorProfileResponse(BaseModel):
+    """医生执业档案响应"""
+
+    id: int
+    user_id: int
+    display_name: str
+    specialty: Optional[str] = None
+    department: Optional[str] = None
+    title: Optional[str] = None
+    hospital: Optional[str] = None
+    introduction: Optional[str] = None
+    consultation_hours: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
+class DoctorProfileUpdate(BaseModel):
+    """医生更新自己的执业档案"""
+
+    display_name: Optional[str] = Field(None, min_length=1, max_length=50)
+    specialty: Optional[str] = Field(None, max_length=200)
+    department: Optional[str] = Field(None, max_length=100)
+    title: Optional[str] = Field(None, max_length=50)
+    hospital: Optional[str] = Field(None, max_length=100)
+    introduction: Optional[str] = None
+    consultation_hours: Optional[str] = Field(None, max_length=200)
+
+
 class DoctorProfileStats(BaseModel):
     """医生个人中心统计"""
+
     patient_count: int = 0
     total_detections: int = 0
     total_records: int = 0
@@ -171,6 +207,7 @@ class DoctorProfileStats(BaseModel):
 
 class AdminProfileStats(BaseModel):
     """管理员个人中心统计"""
+
     total_users: int = 0
     total_patients: int = 0
     total_doctors: int = 0
@@ -255,6 +292,7 @@ class SceneResponse(BaseModel):
     class Config:
         from_attributes = True
         protected_namespaces = ()
+
 
 # --- 检测任务 ---
 
@@ -461,7 +499,9 @@ class ModelVersionCreate(BaseModel):
 class ModelValidateRequest(BaseModel):
     """模型评估请求"""
 
-    split: ModelDataSplit = Field(default="val", description="评估数据集划分: train / val / test")
+    split: ModelDataSplit = Field(
+        default="val", description="评估数据集划分: train / val / test"
+    )
     conf: float = Field(default=0.001, ge=0, le=1, description="置信度阈值")
     iou: float = Field(default=0.6, ge=0, le=1, description="NMS IoU 阈值")
 

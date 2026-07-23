@@ -75,6 +75,12 @@ class User(Base):
         uselist=False,
         foreign_keys="PatientProfile.user_id",
     )
+    doctor_profile = relationship(
+        "DoctorProfile",
+        back_populates="user",
+        uselist=False,
+        foreign_keys="DoctorProfile.user_id",
+    )
     doctor_patients = relationship(
         "DoctorPatientRelation",
         back_populates="doctor",
@@ -734,6 +740,39 @@ class PatientProfile(Base):
         back_populates="patient_profile",
         foreign_keys="DetectionTask.patient_profile_id",
     )
+
+
+class DoctorProfile(Base):
+    """医生执业档案表 — 医生的真实姓名、专业方向等扩展信息"""
+
+    __tablename__ = "doctor_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        unique=True,
+        nullable=False,
+        index=True,
+        comment="关联的用户账号",
+    )
+    display_name = Column(
+        String(50), nullable=False, comment="医生真实姓名（用于推荐展示）"
+    )
+    specialty = Column(String(200), nullable=True, comment="专业方向，如'胸部影像诊断'")
+    department = Column(String(100), nullable=True, comment="所在科室")
+    title = Column(String(50), nullable=True, comment="职称，如'主任医师'")
+    hospital = Column(String(100), nullable=True, comment="所在医院")
+    introduction = Column(Text, nullable=True, comment="个人简介/自述")
+    consultation_hours = Column(String(200), nullable=True, comment="出诊时间")
+    is_active = Column(Boolean, default=True, comment="是否启用")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at = Column(
+        DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间"
+    )
+
+    # 关联
+    user = relationship("User", back_populates="doctor_profile", foreign_keys=[user_id])
 
 
 class DoctorPatientRelation(Base):

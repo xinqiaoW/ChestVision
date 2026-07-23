@@ -111,6 +111,137 @@
           </el-form>
         </el-card>
 
+        <!-- 医生执业档案（仅医生） -->
+        <el-card v-if="isDoctor" class="profile-card" shadow="hover">
+          <template #header>
+            <div class="card-header">
+              <span>🩺 执业档案</span>
+              <el-button type="primary" size="small" @click="startEditDoctor"
+                >编辑</el-button
+              >
+            </div>
+          </template>
+
+          <el-form v-if="!editingDoctor" label-width="110px">
+            <el-row :gutter="16">
+              <el-col :span="12">
+                <el-form-item label="真实姓名">{{
+                  doctorProfile?.display_name || "未设置"
+                }}</el-form-item>
+                <el-form-item label="专业方向">{{
+                  doctorProfile?.specialty || "未设置"
+                }}</el-form-item>
+                <el-form-item label="所在科室">{{
+                  doctorProfile?.department || "未设置"
+                }}</el-form-item>
+                <el-form-item label="出诊时间">{{
+                  doctorProfile?.consultation_hours || "未设置"
+                }}</el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="职称">{{
+                  doctorProfile?.title || "未设置"
+                }}</el-form-item>
+                <el-form-item label="所在医院">{{
+                  doctorProfile?.hospital || "未设置"
+                }}</el-form-item>
+              </el-col>
+            </el-row>
+            <el-form-item label="个人简介">{{
+              doctorProfile?.introduction || "未填写"
+            }}</el-form-item>
+            <el-alert
+              type="info"
+              :closable="false"
+              show-icon
+              style="margin-top: 8px"
+            >
+              <template #title>
+                此处的<strong>真实姓名</strong>将用于 AI
+                医生推荐时的展示，请务必填写真实信息。
+              </template>
+            </el-alert>
+          </el-form>
+
+          <el-form
+            v-else
+            ref="doctorFormRef"
+            :model="doctorForm"
+            label-width="110px"
+          >
+            <el-row :gutter="16">
+              <el-col :span="12">
+                <el-form-item label="真实姓名" required>
+                  <el-input
+                    v-model="doctorForm.display_name"
+                    placeholder="请输入您的真实姓名"
+                    maxlength="50"
+                  />
+                </el-form-item>
+                <el-form-item label="专业方向">
+                  <el-input
+                    v-model="doctorForm.specialty"
+                    placeholder="如：胸部影像诊断、肺结节筛查"
+                    maxlength="200"
+                  />
+                </el-form-item>
+                <el-form-item label="所在科室">
+                  <el-input
+                    v-model="doctorForm.department"
+                    placeholder="如：放射科"
+                    maxlength="100"
+                  />
+                </el-form-item>
+                <el-form-item label="出诊时间">
+                  <el-input
+                    v-model="doctorForm.consultation_hours"
+                    placeholder="如：周一至周五 8:00-17:00"
+                    maxlength="200"
+                  />
+                </el-form-item>
+              </el-col>
+              <el-col :span="12">
+                <el-form-item label="职称">
+                  <el-select
+                    v-model="doctorForm.title"
+                    clearable
+                    placeholder="请选择职称"
+                  >
+                    <el-option label="主任医师" value="主任医师" />
+                    <el-option label="副主任医师" value="副主任医师" />
+                    <el-option label="主治医师" value="主治医师" />
+                    <el-option label="住院医师" value="住院医师" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="所在医院">
+                  <el-input
+                    v-model="doctorForm.hospital"
+                    placeholder="请输入所在医院"
+                    maxlength="100"
+                  />
+                </el-form-item>
+              </el-col>
+            </el-row>
+            <el-form-item label="个人简介">
+              <el-input
+                v-model="doctorForm.introduction"
+                type="textarea"
+                :rows="3"
+                placeholder="简述您的从医经历、擅长领域等，将用于 AI 医生推荐匹配"
+              />
+            </el-form-item>
+            <el-form-item>
+              <el-button
+                type="primary"
+                :loading="savingDoctor"
+                @click="saveDoctor"
+                >保存</el-button
+              >
+              <el-button @click="cancelEditDoctor">取消</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+
         <!-- 患者档案（仅患者） -->
         <el-card v-if="isPatient" class="profile-card" shadow="hover">
           <template #header>
@@ -302,8 +433,10 @@
 <script setup>
 import {
   changePasswordApi,
+  getDoctorProfileApi,
   getPatientProfileApi,
   getProfileStatsApi,
+  updateDoctorProfileApi,
   updatePatientProfileApi,
   updateProfileApi,
 } from "@/api/auth";
@@ -486,6 +619,57 @@ async function savePatient() {
   }
 }
 
+// ── 医生执业档案 ──
+const doctorProfile = ref(null);
+const editingDoctor = ref(false);
+const savingDoctor = ref(false);
+const doctorFormRef = ref(null);
+const doctorForm = reactive({
+  display_name: "",
+  specialty: "",
+  department: "",
+  title: "",
+  hospital: "",
+  introduction: "",
+  consultation_hours: "",
+});
+
+function startEditDoctor() {
+  const p = doctorProfile.value;
+  if (p)
+    Object.assign(doctorForm, {
+      display_name: p.display_name || "",
+      specialty: p.specialty || "",
+      department: p.department || "",
+      title: p.title || "",
+      hospital: p.hospital || "",
+      introduction: p.introduction || "",
+      consultation_hours: p.consultation_hours || "",
+    });
+  editingDoctor.value = true;
+}
+function cancelEditDoctor() {
+  editingDoctor.value = false;
+}
+
+async function saveDoctor() {
+  if (!doctorForm.display_name.trim()) {
+    ElMessage.warning("请填写真实姓名");
+    return;
+  }
+  savingDoctor.value = true;
+  try {
+    const res = await updateDoctorProfileApi(doctorForm);
+    doctorProfile.value = res;
+    editingDoctor.value = false;
+    ElMessage.success("执业档案已更新");
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "更新失败");
+  } finally {
+    savingDoctor.value = false;
+  }
+}
+
 // ── 统计数据 ──
 const adminStats = ref([]);
 const doctorStats = reactive({
@@ -526,6 +710,13 @@ onMounted(async () => {
   if (isPatient.value) {
     try {
       patientProfile.value = await getPatientProfileApi();
+    } catch (e) {
+      /* */
+    }
+  }
+  if (isDoctor.value) {
+    try {
+      doctorProfile.value = await getDoctorProfileApi();
     } catch (e) {
       /* */
     }
