@@ -134,10 +134,11 @@ async def detect(
                 model_path=model_path,
             )
         except FileNotFoundError as e:
-            raise HTTPException(status_code=500, detail=f"模型加载失败: {str(e)}")
+            logger.error("模型加载失败: %s", str(e), exc_info=True)
+            raise HTTPException(status_code=500, detail="模型加载失败，请联系管理员查看后端日志")
         except Exception as e:
             logger.error("检测推理失败: %s", str(e), exc_info=True)
-            raise HTTPException(status_code=500, detail=f"检测推理失败: {str(e)}")
+            raise HTTPException(status_code=500, detail="检测推理失败，请联系管理员查看后端日志")
 
         # ── 关联患者档案（v3.0）──
         linked_patient_profile_id = None

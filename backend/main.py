@@ -15,11 +15,18 @@ from app.api.training import router as training_router  # 训练 API 路由
 from app.api.knowledge import router as knowledge_router  # Day11: 知识库管理 API
 from app.config.settings import settings
 from app.core.exceptions import register_exception_handlers
+from app.core.logger import get_logger
 from app.middleware.request_logger import RequestLogMiddleware
+from app.model_management.router import router as model_management_router
+from app.train.remote_train_config import check_remote_train_environment
+from app.train.remote_train_router import router as remote_training_router
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+
+logger = get_logger(__name__)
 
 
 def init_minio():
@@ -31,6 +38,34 @@ def init_minio():
         print(f"MinIO 存储桶 '{minio_client.bucket_name}' 初始化完成")
     except Exception as e:
         print(f"MinIO 初始化失败: {e}")
+
+
+def check_startup_environment() -> None:
+    """启动时检查远程训练本地配置。
+
+    这里只检查环境变量或 .env 是否填写，不访问 OSS/PAI-DLC 网络。
+    缺失时只写 WARNING 日志，不阻止主服务启动；接口调用时仍会做强校验。
+    """
+    result = check_remote_train_environment()
+    if result["ready"]:
+        logger.info("远程训练环境变量检查通过")
+        return
+
+    if result["oss_missing"]:
+        logger.warning(
+            "远程训练 OSS 环境变量未配置完整: %s",
+            ", ".join(result["oss_missing"]),
+        )
+    if result["pai_missing"]:
+        logger.warning(
+            "远程训练 PAI-DLC 环境变量未配置完整: %s",
+            ", ".join(result["pai_missing"]),
+        )
+    if result["callback_missing"]:
+        logger.warning(
+            "远程训练内部回调环境变量未配置完整: %s",
+            ", ".join(result["callback_missing"]),
+        )
 
 
 def init_knowledge_base():
@@ -48,6 +83,7 @@ async def lifespan(_app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
     print("正在初始化服务...")
+    check_startup_environment()
     init_minio()
     init_knowledge_base()
     yield
@@ -86,6 +122,8 @@ app.add_middleware(RequestLogMiddleware)
 app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(training_router)  # 注册训练 API 路由
+app.include_router(remote_training_router)  # 注册生产远程训练 API 路由
+app.include_router(model_management_router)  # 注册模型管理 API 路由
 app.include_router(detection_router)  # 注册检测 API 路由
 app.include_router(doctor_recommendation_router)  # AI 医生推荐
 app.include_router(chat_router)  # 注册对话 API 路由

@@ -12,7 +12,7 @@ VALUES (
     '["aircraft", "oiltank", "overpass", "playground"]',
     '{"aircraft": "飞机", "oiltank": "储罐", "overpass": "立交桥", "playground": "操场"}',
     true,
-    1,
+    NULL,
     NOW(),
     NOW()
 )
@@ -28,7 +28,7 @@ VALUES (
     '["Atelectasis", "Calcification", "Consolidation", "Effusion", "Emphysema", "Fibrosis", "Fracture", "Mass", "Nodule", "Pneumothorax"]',
     '{"Atelectasis": "肺不张", "Calcification": "钙化", "Consolidation": "实变", "Effusion": "积液", "Emphysema": "肺气肿", "Fibrosis": "纤维化", "Fracture": "骨折", "Mass": "肿块", "Nodule": "结节", "Pneumothorax": "气胸"}',
     true,
-    1,
+    NULL,
     NOW(),
     NOW()
 )

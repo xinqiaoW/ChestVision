@@ -157,7 +157,7 @@ class DetectionAgent:
             }
         except Exception as e:
             logger.error("Agent 执行异常: %s", str(e), exc_info=True)
-            return {"output": f"抱歉，处理出错：{str(e)}", "intermediate_steps": []}
+            return {"output": "抱歉，处理失败，请稍后重试", "intermediate_steps": []}
 
     async def chat_stream(
         self,
@@ -242,16 +242,7 @@ class DetectionAgent:
 
         except Exception as e:
             logger.error("Agent 流式异常: %s", str(e), exc_info=True)
-            error_msg = str(e)
-            if "Access denied" in error_msg and "overdue" in error_msg.lower():
-                error_msg = "大模型服务访问受限，请检查您的阿里云账号状态（可能余额不足或服务过期）"
-            elif "401" in error_msg or "Unauthorized" in error_msg:
-                error_msg = "大模型认证失败，请检查 API Key 配置"
-            elif "Connection refused" in error_msg:
-                error_msg = "无法连接到大模型服务，请检查网络配置"
-            elif "timeout" in error_msg.lower():
-                error_msg = "大模型请求超时，请稍后重试"
-            yield {"type": "error", "content": error_msg}
+            yield {"type": "error", "content": "处理失败，请稍后重试"}
 
         # ── Step 3: 缓存 AI 回复到 Redis 记忆 ──
         if full_text and user_id:

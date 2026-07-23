@@ -170,13 +170,14 @@ class TrainingService:
             logger.info("训练完成：task_id=%d", task_id)
 
         except FileNotFoundError as e:
+            logger.error("训练文件缺失：%s", str(e), exc_info=True)
             task.status = "failed"
-            task.error_message = str(e)
+            task.error_message = "训练所需文件不存在，请检查数据集和模型配置"
             db.commit()
         except Exception as e:
             logger.error("训练异常：%s", str(e), exc_info=True)
             task.status = "failed"
-            task.error_message = str(e)[:2000]
+            task.error_message = "训练失败，请联系管理员查看后端日志"
             db.commit()
         finally:
             try:
@@ -435,6 +436,7 @@ class TrainingService:
         original_cwd = os.getcwd()
         weights_path = TrainingService._resolve_weights_path(db, task_id)
         if not weights_path:
+            logger.warning("模型评估失败，权重文件不存在: task_id=%d", task_id)
             return {"error": "模型权重文件不存在，请确认训练已完成或模型已注册"}
 
         data_yaml = task.data_yaml
@@ -554,9 +556,16 @@ class TrainingService:
             )
             return report
 
+        except Exception as e:
+            db.rollback()
+            logger.error("模型评估异常: task_id=%d, error=%s", task_id, str(e), exc_info=True)
+            return {"error": "评估失败，请联系管理员查看后端日志"}
         finally:
-            with open(data_yaml, "w", encoding="utf-8") as f:
-                f.write(original_content)
+            try:
+                with open(data_yaml, "w", encoding="utf-8") as f:
+                    f.write(original_content)
+            except Exception as e:
+                logger.warning("恢复 data.yaml 失败: %s", str(e), exc_info=True)
 
     @staticmethod
     def export_model(
@@ -579,6 +588,7 @@ class TrainingService:
         original_cwd = os.getcwd()
         weights_path = TrainingService._resolve_weights_path(db, task_id)
         if not weights_path:
+            logger.warning("模型导出失败，权重文件不存在: task_id=%d", task_id)
             return {"error": "模型权重文件不存在，请确认训练已完成或模型已注册"}
 
         scene = (

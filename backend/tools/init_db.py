@@ -27,7 +27,7 @@ try:
             'medical',
             '["Atelectasis", "Calcification", "Consolidation", "Effusion", "Emphysema", "Fibrosis", "Fracture", "Mass", "Nodule", "Pneumothorax"]',
             '{"Atelectasis": "肺不张", "Calcification": "钙化", "Consolidation": "实变", "Effusion": "积液", "Emphysema": "肺气肿", "Fibrosis": "纤维化", "Fracture": "骨折", "Mass": "肿块", "Nodule": "结节", "Pneumothorax": "气胸"}',
-            true, 1, NOW(), NOW()
+            true, NULL, NOW(), NOW()
         )
         ON CONFLICT DO NOTHING
     """)
