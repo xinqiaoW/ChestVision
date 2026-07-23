@@ -16,12 +16,16 @@
   results = knowledge_retriever.search("什么是肺不张？", top_k=3)
 """
 
+from app.config.settings import settings
 from app.core.logger import get_logger
 from app.rag.document_loader import document_loader
 from app.rag.embedding import embedding_service
 from app.vectorstore.pgvector_client import pgvector_client
 
 logger = get_logger(__name__)
+
+# 统一使用配置中的相似度阈值
+RAG_THRESHOLD = settings.RAG_SIMILARITY_THRESHOLD
 
 
 class KnowledgeRetriever:
@@ -32,9 +36,11 @@ class KnowledgeRetriever:
 
     def build_index(self, force_rebuild: bool = False):
         """构建知识库索引：加载文档 → 文本分块 → 向量化 → 存储"""
-        if self._index_built and not force_rebuild:
+        # 检查是否已有索引数据（无论 _index_built 状态，避免重启后重复构建）
+        if not force_rebuild:
             count = pgvector_client.count()
             if count > 0:
+                self._index_built = True
                 logger.info("知识库索引已存在 (%d条)，跳过构建", count)
                 return
 
@@ -110,6 +116,33 @@ class KnowledgeRetriever:
             )
 
         return "\n\n---\n\n".join(parts)
+
+    def search_with_threshold(
+        self, query: str, top_k: int = 3, threshold: float = None
+    ) -> list[dict]:
+        """语义检索并自动过滤低于阈值的结果（供 Agent 节点使用）
+
+        Args:
+            query: 查询文本
+            top_k: 返回最大条数
+            threshold: 相似度阈值，默认使用全局配置 RAG_SIMILARITY_THRESHOLD
+
+        Returns:
+            已过滤的检索结果列表
+        """
+        if threshold is None:
+            threshold = RAG_THRESHOLD
+
+        results = self.search(query, top_k=top_k)
+        if not results:
+            return []
+
+        # 过滤低于阈值的结果
+        filtered = [
+            r for r in results
+            if r.get("similarity", 0) >= threshold
+        ]
+        return filtered
 
     def get_stats(self) -> dict:
         """获取知识库统计信息"""

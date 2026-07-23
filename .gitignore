@@ -54,6 +54,8 @@ XJTU-fxhd/
 _.gitignore
 # ── 运行时生成的文件 ────────────────────────────────
 backend/storage/
+.server-tools/
+.run/
 
 # ── 数据库 ─────────────────────────────────────────
 *.db
@@ -68,6 +70,10 @@ frontend/dist/
 
 # ── Docker ─────────────────────────────────────────
 .docker/
+
+# ── Codex local work files ─────────────────────────
+.codex_tmp_template/
+_work/
 
 # ── 测试覆盖率 ──────────────────────────────────────
 htmlcov/

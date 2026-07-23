@@ -14,15 +14,115 @@ body {
   min-height: calc(100vh - $header-height);
 }
 
-// ── 卡片容器 ────────────────────────────────────────
+// ── 卡片容器（医疗科技风：大圆角 + 弥散阴影）──────
 .card-container {
   background: $bg-white;
-  border-radius: $border-radius-md;
+  border-radius: $border-radius-lg;
   box-shadow: $shadow-sm;
-  padding: $spacing-lg;
-  margin-bottom: $spacing-md;
+  padding: $spacing-xl;
+  margin-bottom: $spacing-lg;
+  transition: all 0.3s ease;
+  &:hover { box-shadow: $shadow-md; transform: translateY(-1px); }
+}
+
+// ── Element Plus 卡片覆盖 ──────────────────────────
+.el-card {
+  border-radius: $border-radius-lg !important;
+  border: none !important;
+  box-shadow: $shadow-sm !important;
   transition: box-shadow 0.3s ease;
-  &:hover { box-shadow: $shadow-md; }
+  &:hover { box-shadow: $shadow-md !important; }
+}
+.el-card__header {
+  border-bottom: 1px solid #f0f0f0;
+  padding: $spacing-md $spacing-xl;
+  font-weight: 600;
+  color: $text-primary;
+}
+.el-card__body {
+  padding: $spacing-xl;
+}
+
+// ── 表格（无竖线 + 细横线 + 悬浮高亮）─────────────
+.el-table {
+  --el-table-border-color: transparent;
+  border: none !important;
+  th.el-table__cell {
+    background: #f8fafb;
+    color: $text-secondary;
+    font-weight: 500;
+    font-size: 13px;
+    border-bottom: 1px solid #eef1f5;
+    padding: 14px 16px;
+  }
+  td.el-table__cell {
+    border-bottom: 1px solid #f5f6f8;
+    padding: 14px 16px;
+    color: $text-regular;
+  }
+  .el-table__body tr:hover > td {
+    background: #f8fafc;
+  }
+  &::before { display: none; }
+}
+
+// ── 状态徽章（药丸形状）────────────────────────────
+.el-tag {
+  border-radius: 20px;
+  border: none;
+  font-weight: 500;
+  padding: 2px 12px;
+}
+
+// ── 输入框覆盖 ──────────────────────────────────────
+.el-input__wrapper {
+  border-radius: $border-radius-sm !important;
+  background: #f8fafb;
+  transition: all 0.25s;
+}
+.el-input__wrapper.is-focus {
+  border-color: $primary-color !important;
+  box-shadow: 0 0 0 3px rgba(42,157,143,0.1) !important;
+}
+
+// ── 按钮覆盖 ────────────────────────────────────────
+.el-button--primary {
+  border-radius: $border-radius-sm;
+  background: linear-gradient(135deg, $primary-dark, $primary-color);
+  border: none;
+  box-shadow: 0 2px 10px rgba(42,157,143,0.2);
+  transition: all 0.25s;
+  &:hover { box-shadow: 0 4px 16px rgba(42,157,143,0.3); transform: translateY(-1px); }
+  &:active { transform: scale(0.97); }
+}
+.el-button {
+  border-radius: $border-radius-sm;
+  font-weight: 500;
+}
+
+// ── 对话框覆盖 ──────────────────────────────────────
+.el-dialog {
+  border-radius: $border-radius-lg;
+}
+.el-dialog__header {
+  padding: $spacing-lg $spacing-xl 0;
+}
+.el-dialog__body {
+  padding: $spacing-lg $spacing-xl;
+}
+
+// ── 分页覆盖 ────────────────────────────────────────
+.el-pagination {
+  margin-top: $spacing-lg;
+}
+
+// ── 进度条覆盖 ──────────────────────────────────────
+.el-progress-bar__outer {
+  border-radius: 8px;
+  background: #eef1f5;
+}
+.el-progress-bar__inner {
+  border-radius: 8px;
 }
 
 // ── Flex 布局辅助 ───────────────────────────────────
@@ -36,6 +136,117 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+// ── 页面标题（品牌色左边框 + 图标）────────────────
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: $text-primary;
+  margin: 0 0 $spacing-lg;
+  padding-left: 14px;
+  border-left: 4px solid $primary-color;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.3;
+}
+
+// ── 统计卡片（渐变背景 + 大数字）──────────────────
+.stat-card {
+  text-align: center;
+  border-radius: $border-radius-lg !important;
+  overflow: hidden;
+  .stat-num {
+    font-size: 32px;
+    font-weight: 700;
+    color: $primary-color;
+    margin-bottom: 4px;
+    line-height: 1.2;
+  }
+  .stat-label {
+    font-size: 13px;
+    color: $text-secondary;
+    font-weight: 500;
+  }
+}
+
+// ── 统计卡片彩色变体 ──────────────────────────────
+.stat-card-accent {
+  background: linear-gradient(135deg, $primary-dark, $primary-color) !important;
+  .stat-num, .stat-label { color: #fff; }
+}
+
+// ── 空状态 ─────────────────────────────────────────
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: $text-secondary;
+  .empty-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.6;
+  }
+  .empty-text {
+    font-size: 15px;
+    margin-bottom: 8px;
+  }
+  .empty-hint {
+    font-size: 13px;
+    color: $text-placeholder;
+  }
+}
+
+// ── 页面头部（标题 + 操作按钮）────────────────────
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: $spacing-lg;
+
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    color: $text-primary;
+    margin: 0;
+    line-height: 1.3;
+  }
+}
+
+// ── 页面副标题 ─────────────────────────────────────
+.page-subtitle {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: $text-placeholder;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-top: 2px;
+}
+
+// ── 筛选栏 ─────────────────────────────────────────
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: $spacing-md;
+  flex-wrap: wrap;
+}
+
+// ── 渐入动画 ────────────────────────────────────────
+.fade-in-up-enter-active {
+  transition: all 0.4s ease;
+}
+.fade-in-up-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+// ── Element Plus 消息提示覆盖 ─────────────────────
+.el-message {
+  border-radius: $border-radius-sm;
+  border: none;
+  box-shadow: $shadow-md;
 }
 
 // ── 文本截断 ────────────────────────────────────────

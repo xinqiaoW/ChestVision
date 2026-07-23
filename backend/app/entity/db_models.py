@@ -89,6 +89,22 @@ class User(Base):
     )
 
 
+class EmailVerificationCode(Base):
+    """邮箱验证码审计表；仅保存 HMAC 哈希，不保存验证码明文。"""
+
+    __tablename__ = "email_verification_codes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(100), nullable=False, index=True)
+    purpose = Column(String(30), nullable=False, default="register", index=True)
+    code_hash = Column(String(64), nullable=False)
+    request_ip = Column(String(50), nullable=True, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    consumed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
+
 class Role(Base):
     """角色表"""
 
@@ -835,6 +851,40 @@ class ChatMessage(Base):
 
     # 关联
     session = relationship("ChatSession", back_populates="messages")
+
+
+class DoctorRecommendation(Base):
+    """AI 医生推荐审计记录 — 保存模型当时的排序与推荐依据。"""
+
+    __tablename__ = "doctor_recommendations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    detection_task_id = Column(
+        Integer, ForeignKey("detection_tasks.id"), nullable=False, index=True
+    )
+    patient_profile_id = Column(
+        Integer, ForeignKey("patient_profiles.id"), nullable=True, index=True
+    )
+    doctor_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    rank = Column(Integer, nullable=False)
+    match_score = Column(Float, nullable=False, default=0)
+    display_name = Column(String(100), nullable=False)
+    specialty = Column(String(200), nullable=True)
+    matched_lesions = Column(JSON, nullable=True)
+    reasons = Column(JSON, nullable=True)
+    summary = Column(Text, nullable=True)
+    context_snapshot = Column(JSON, nullable=True)
+    model_name = Column(String(100), nullable=True)
+    selection_method = Column(String(20), default="ai", comment="ai / fallback")
+    status = Column(
+        String(20), default="recommended", comment="recommended / selected / dismissed"
+    )
+    selected_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    selected_at = Column(DateTime, nullable=True)
+    confirmed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    review_note = Column(String(500), nullable=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
 
 
 # ══════════════════════════════════════════════════════════════

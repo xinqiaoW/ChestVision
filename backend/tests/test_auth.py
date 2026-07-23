@@ -196,3 +196,56 @@ class TestGetCurrentUser:
             headers={"Authorization": "Bearer invalid_token_here"},
         )
         assert response.status_code == 401
+
+
+class TestChangePassword:
+    """修改密码接口测试。"""
+
+    def test_change_password_and_login_with_new_password(
+        self, client, db_session, monkeypatch
+    ):
+        from app.api import profile as profile_api
+
+        username = "change_password_user"
+        old_password = "123456"
+        new_password = "456789"
+
+        register_response = client.post(
+            "/api/auth/register",
+            json={
+                "username": username,
+                "email": "change-password@example.com",
+                "password": old_password,
+            },
+        )
+        assert register_response.status_code == 201
+
+        login_response = client.post(
+            "/api/auth/login",
+            json={"username": username, "password": old_password},
+        )
+        assert login_response.status_code == 200
+        token = login_response.json()["access_token"]
+
+        monkeypatch.setattr(profile_api, "SessionLocal", lambda: db_session)
+        change_response = client.put(
+            "/api/profile/me/password",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "old_password": old_password,
+                "new_password": new_password,
+            },
+        )
+        assert change_response.status_code == 200
+
+        old_login_response = client.post(
+            "/api/auth/login",
+            json={"username": username, "password": old_password},
+        )
+        assert old_login_response.status_code == 401
+
+        new_login_response = client.post(
+            "/api/auth/login",
+            json={"username": username, "password": new_password},
+        )
+        assert new_login_response.status_code == 200
