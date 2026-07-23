@@ -65,6 +65,23 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
+    # ── 邮箱验证码（QQ SMTP 默认配置）────────────────
+    EMAIL_VERIFICATION_REQUIRED: bool = True
+    SMTP_HOST: str = "smtp.qq.com"
+    SMTP_PORT: int = 465
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+    SMTP_FROM_NAME: str = "ChestVision"
+    SMTP_USE_SSL: bool = True
+    SMTP_USE_STARTTLS: bool = False
+    SMTP_TIMEOUT_SECONDS: int = 15
+    EMAIL_CODE_EXPIRE_MINUTES: int = 10
+    EMAIL_CODE_RESEND_SECONDS: int = 60
+    EMAIL_CODE_MAX_ATTEMPTS: int = 5
+    EMAIL_CODE_MAX_PER_EMAIL_PER_HOUR: int = 5
+    EMAIL_CODE_MAX_PER_IP_PER_HOUR: int = 20
+
     # ── 训练配置 ──────────────────────────────────────
     TRAIN_OUTPUT_DIR: str = "runs/train"  # 训练输出目录（模型权重、日志等）
     DATASET_BASE_DIR: str = "datasets"  # 数据集根目录

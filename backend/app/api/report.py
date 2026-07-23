@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import io
 import json
@@ -15,7 +16,7 @@ from datetime import datetime
 from urllib.parse import quote
 
 from app.api.auth import get_current_user
-from app.database.session import get_db
+from app.database.session import SessionLocal, get_db
 from app.entity.db_models import (
     DetectionTask,
     DoctorPatientRelation,
@@ -664,6 +665,15 @@ async def generate_report(
     为指定检测任务生成并持久化深度报告；
     task_id=0 使用当前用户最近一次检测。
     """
+    return await _generate_report_payload(req, db, current_user)
+
+
+async def _generate_report_payload(
+    req: GenerateReportRequest,
+    db: Session,
+    current_user: User,
+) -> dict:
+    """生成、校验并持久化报告，供普通 JSON 与 SSE 接口共用。"""
     task = _get_task(db, current_user, req.task_id)
     profile = _get_profile(db, task)
     task.risk_level = _derive_risk_level(task)
@@ -686,6 +696,92 @@ async def generate_report(
         "risk_level": task.risk_level,
         "pdf_url": f"/api/reports/{task.id}/pdf",
     }
+
+
+@router.post("/generate/stream")
+async def generate_report_stream(
+    req: GenerateReportRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    流式生成深度报告。
+
+    内部模型和安全校验不对用户暴露中间文本；
+    只将校验后的最终报告以 text_chunk 逐段输出。
+    """
+
+    async def event_generator():
+        db = SessionLocal()
+        try:
+            yield (
+                "data: "
+                + json.dumps(
+                    {"type": "thinking", "content": "正在生成并校验深度报告..."},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+            payload = await _generate_report_payload(req, db, current_user)
+            content = payload["content"]
+            chunk_size = 14
+            for index in range(0, len(content), chunk_size):
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "text_chunk",
+                            "content": content[index : index + chunk_size],
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
+                )
+                await asyncio.sleep(0.018)
+
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "report_ready",
+                        "task_id": payload["task_id"],
+                        "pdf_url": payload["pdf_url"],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+            yield "data: " + json.dumps({"type": "done"}) + "\n\n"
+        except HTTPException as exc:
+            yield (
+                "data: "
+                + json.dumps(
+                    {"type": "error", "content": str(exc.detail)},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+        except Exception as exc:
+            logger.exception("流式报告生成失败")
+            yield (
+                "data: "
+                + json.dumps(
+                    {"type": "error", "content": f"生成报告失败：{exc}"},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+        finally:
+            db.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/{report_id}")

@@ -30,7 +30,10 @@ def register_exception_handlers(app: FastAPI):
 
         这些是代码中主动 raise 的业务错误，不需要记录 ERROR 日志，
         只需返回给前端即可。
+        对 5xx 错误必须隐藏 detail，避免数据库 SQL、云 SDK 响应、
+        本地路径或密钥片段通过 HTTPException.detail 泄露给客户端。
         """
+        client_message = exc.detail
         # 4xx 错误用 WARNING 级别（客户端问题）
         if 400 <= exc.status_code < 500:
             logger.warning(
@@ -46,12 +49,13 @@ def register_exception_handlers(app: FastAPI):
                 exc.detail,
                 request.url.path,
             )
+            client_message = "服务器内部错误"
 
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "code": exc.status_code,
-                "message": exc.detail,
+                "message": client_message,
                 "data": None,
             },
         )

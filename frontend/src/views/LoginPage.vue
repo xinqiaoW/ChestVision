@@ -105,6 +105,27 @@
                 placeholder="邮箱"
                 prefix-icon="Message"
             /></el-form-item>
+            <el-form-item prop="emailCode">
+              <div class="verification-row">
+                <el-input
+                  v-model="registerForm.emailCode"
+                  placeholder="6 位邮箱验证码"
+                  prefix-icon="Key"
+                  maxlength="6"
+                  inputmode="numeric"
+                  @keyup.enter="handleRegister"
+                />
+                <el-button
+                  class="verification-button"
+                  native-type="button"
+                  :loading="codeSending"
+                  :disabled="codeCountdown > 0 || !registerForm.email"
+                  @click="handleSendCode"
+                >{{
+                  codeCountdown > 0 ? `${codeCountdown}s 后重发` : "获取验证码"
+                }}</el-button>
+              </div>
+            </el-form-item>
             <el-form-item prop="userType">
               <el-select
                 v-model="registerForm.userType"
@@ -213,10 +234,14 @@
 </template>
 
 <script setup>
-import { forgotPasswordApi, registerApi } from "@/api/auth";
+import {
+  forgotPasswordApi,
+  registerApi,
+  sendRegistrationCodeApi,
+} from "@/api/auth";
 import { useUserStore } from "@/stores/user";
 import { ElMessage } from "element-plus";
-import { reactive, ref } from "vue";
+import { onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 const router = useRouter();
@@ -302,6 +327,7 @@ const registering = ref(false);
 const registerForm = reactive({
   name: "",
   email: "",
+  emailCode: "",
   password: "",
   confirmPassword: "",
   userType: "patient",
@@ -314,6 +340,14 @@ const registerRules = {
   email: [
     { required: true, message: "请输入邮箱", trigger: "blur" },
     { type: "email", message: "请输入有效的邮箱地址", trigger: "blur" },
+  ],
+  emailCode: [
+    { required: true, message: "请输入邮箱验证码", trigger: "blur" },
+    {
+      pattern: /^\d{6}$/,
+      message: "验证码应为 6 位数字",
+      trigger: "blur",
+    },
   ],
   userType: [{ required: true, message: "请选择用户类型", trigger: "change" }],
   password: [
@@ -334,6 +368,63 @@ const registerRules = {
   ],
 };
 
+const codeSending = ref(false);
+const codeCountdown = ref(0);
+const codeEmail = ref("");
+let countdownTimer = null;
+
+function stopCodeCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+  codeCountdown.value = 0;
+}
+
+function startCodeCountdown(seconds = 60) {
+  stopCodeCountdown();
+  codeCountdown.value = seconds;
+  countdownTimer = window.setInterval(() => {
+    codeCountdown.value -= 1;
+    if (codeCountdown.value <= 0) stopCodeCountdown();
+  }, 1000);
+}
+
+async function handleSendCode() {
+  const valid = await registerFormRef.value
+    .validateField("email")
+    .then(() => true)
+    .catch(() => false);
+  if (!valid) return;
+  registerFormRef.value.clearValidate("email");
+
+  codeSending.value = true;
+  try {
+    const response = await sendRegistrationCodeApi(registerForm.email.trim());
+    codeEmail.value = registerForm.email.trim().toLowerCase();
+    startCodeCountdown(response.resend_after || 60);
+    ElMessage.success(response.message || "验证码已发送，请查收邮件");
+  } catch {
+    /* 请求拦截器已显示后端错误 */
+  } finally {
+    codeSending.value = false;
+  }
+}
+
+watch(
+  () => registerForm.email,
+  (email) => {
+    const normalized = email.trim().toLowerCase();
+    if (codeEmail.value && normalized !== codeEmail.value) {
+      codeEmail.value = "";
+      registerForm.emailCode = "";
+      stopCodeCountdown();
+    }
+  },
+);
+
+onBeforeUnmount(stopCodeCountdown);
+
 async function handleRegister() {
   const valid = await registerFormRef.value.validate().catch(() => false);
   if (!valid) return;
@@ -342,10 +433,14 @@ async function handleRegister() {
     await registerApi({
       username: registerForm.name,
       email: registerForm.email,
+      email_code: registerForm.emailCode,
       password: registerForm.password,
       user_type: registerForm.userType,
     });
     ElMessage.success("注册成功，请登录");
+    stopCodeCountdown();
+    codeEmail.value = "";
+    registerFormRef.value.resetFields();
     isLogin.value = true;
   } catch {
     /* 拦截器已处理 */
@@ -538,6 +633,7 @@ async function handleRegister() {
 .register-area {
   left: 50%;
   border-left: 1px solid var(--border);
+  overflow-y: auto;
 }
 
 .form-content {
@@ -563,6 +659,40 @@ async function handleRegister() {
   font-size: 13px;
   color: var(--text-sub);
   margin-bottom: 24px;
+}
+
+.register-area .form-sub {
+  margin-bottom: 16px;
+}
+
+.register-area :deep(.el-form-item) {
+  margin-bottom: 12px;
+}
+
+.verification-row {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+}
+
+.verification-row .el-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.verification-button {
+  flex: 0 0 116px;
+  height: 40px;
+  border-radius: 10px;
+  color: #4a50ad;
+  border-color: #c8cbea;
+  background: #f3f3fb;
+}
+
+.verification-button:not(.is-disabled):hover {
+  color: #fff;
+  border-color: #5b3fcf;
+  background: #5b3fcf;
 }
 
 .form-options {

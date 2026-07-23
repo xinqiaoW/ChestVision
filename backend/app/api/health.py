@@ -62,9 +62,9 @@ async def health_check_detail():
     except Exception as e:
         services["database"] = {
             "status": "unhealthy",
-            "message": f"PostgreSQL 连接失败: {str(e)}",
+            "message": "PostgreSQL 连接失败",
         }
-        logger.error("PostgreSQL 健康检查失败: %s", str(e))
+        logger.error("PostgreSQL 健康检查失败: %s", str(e), exc_info=True)
 
     # ── 检查 Redis ───────────────────────────────────
     try:
@@ -77,9 +77,9 @@ async def health_check_detail():
     except Exception as e:
         services["redis"] = {
             "status": "unhealthy",
-            "message": f"Redis 连接失败: {str(e)}",
+            "message": "Redis 连接失败",
         }
-        logger.error("Redis 健康检查失败: %s", str(e))
+        logger.error("Redis 健康检查失败: %s", str(e), exc_info=True)
 
     # ── 检查 MinIO ───────────────────────────────────
     try:
@@ -91,9 +91,9 @@ async def health_check_detail():
     except Exception as e:
         services["minio"] = {
             "status": "unhealthy",
-            "message": f"MinIO 连接失败: {str(e)}",
+            "message": "MinIO 连接失败",
         }
-        logger.error("MinIO 健康检查失败: %s", str(e))
+        logger.error("MinIO 健康检查失败: %s", str(e), exc_info=True)
 
     # ── 汇总状态 ─────────────────────────────────────
     all_healthy = all(s["status"] == "healthy" for s in services.values())

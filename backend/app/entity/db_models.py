@@ -5,6 +5,7 @@
   用户权限：users, roles, permissions, user_roles, role_permissions
   检测业务：detection_scenes, detection_tasks, detection_results
   模型管理：training_tasks, training_metrics, model_versions
+  远程训练：dataset_uploads, remote_training_jobs, model_artifact_locations
   智能体：  chat_sessions, chat_messages
   系统运维：operation_logs
 """
@@ -66,6 +67,7 @@ class User(Base):
     )
     detection_tasks = relationship("DetectionTask", back_populates="user")
     training_tasks = relationship("TrainingTask", back_populates="user")
+    model_uploads = relationship("ModelUpload", back_populates="user")
     chat_sessions = relationship("ChatSession", back_populates="user")
     operation_logs = relationship("OperationLog", back_populates="user")
     # v3.0 新增
@@ -85,6 +87,22 @@ class User(Base):
         back_populates="patient",
         foreign_keys="DoctorPatientRelation.patient_id",
     )
+
+
+class EmailVerificationCode(Base):
+    """邮箱验证码审计表；仅保存 HMAC 哈希，不保存验证码明文。"""
+
+    __tablename__ = "email_verification_codes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(100), nullable=False, index=True)
+    purpose = Column(String(30), nullable=False, default="register", index=True)
+    code_hash = Column(String(64), nullable=False)
+    request_ip = Column(String(50), nullable=True, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    consumed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
 
 
 class Role(Base):
@@ -212,6 +230,7 @@ class DetectionScene(Base):
     # 关联
     detection_tasks = relationship("DetectionTask", back_populates="scene")
     model_versions = relationship("ModelVersion", back_populates="scene")
+    model_uploads = relationship("ModelUpload", back_populates="scene")
     training_tasks = relationship("TrainingTask", back_populates="scene")
 
 
@@ -405,6 +424,17 @@ class TrainingTask(Base):
         "TrainingMetric", back_populates="task", cascade="all, delete-orphan"
     )
     model_versions = relationship("ModelVersion", back_populates="training_task")
+    remote_training_job = relationship(
+        "RemoteTrainingJob",
+        back_populates="training_task",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    artifact_locations = relationship(
+        "ModelArtifactLocation",
+        back_populates="training_task",
+        cascade="all, delete-orphan",
+    )
 
 
 class TrainingMetric(Base):
@@ -442,6 +472,251 @@ class TrainingMetric(Base):
     task = relationship("TrainingTask", back_populates="metrics")
 
 
+class DatasetUpload(Base):
+    """远程数据集上传会话。
+
+    记录数据集压缩包进入 OSS 的生命周期。
+    大文件本体不进入 Web 后端本地磁盘；YOLO 格式校验和解压归属 PAI-DLC 训练任务第一阶段。
+    """
+
+    __tablename__ = "dataset_uploads"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    upload_uuid = Column(
+        String(100), unique=True, nullable=False, index=True, comment="上传会话 ID"
+    )
+    dataset_uuid = Column(
+        String(100), unique=True, nullable=True, index=True, comment="处理后数据集 ID"
+    )
+    user_id = Column(
+        Integer, ForeignKey("users.id"), nullable=False, index=True, comment="上传用户"
+    )
+    scene_id = Column(
+        Integer,
+        ForeignKey("detection_scenes.id"),
+        nullable=True,
+        index=True,
+        comment="关联检测场景，可为空表示尚未绑定业务场景",
+    )
+    dataset_name = Column(String(100), nullable=False, comment="数据集名称")
+    status = Column(
+        String(30),
+        nullable=False,
+        default="INITIATED",
+        index=True,
+        comment="INITIATED/UPLOADING/UPLOADED/FAILED/EXPIRED/CANCELLED",
+    )
+
+    bucket = Column(String(128), nullable=False, comment="OSS bucket")
+    raw_object_key = Column(String(500), nullable=False, comment="原始 ZIP 对象 key")
+    processed_prefix = Column(String(500), nullable=True, comment="处理后数据集前缀")
+    manifest_key = Column(String(500), nullable=True, comment="manifest.json key")
+    success_key = Column(String(500), nullable=True, comment="_SUCCESS key")
+
+    original_filename = Column(String(255), nullable=False, comment="原始文件名")
+    content_type = Column(String(100), nullable=True, comment="上传对象 MIME 类型")
+    expected_size = Column(BigInteger, nullable=True, comment="客户端声明大小")
+    actual_size = Column(BigInteger, nullable=True, comment="OSS HeadObject 大小")
+    etag = Column(String(128), nullable=True, comment="OSS 对象 ETag")
+    checksum_sha256 = Column(String(128), nullable=True, comment="客户端或后端计算的 SHA256")
+    object_metadata = Column("metadata", JSON, nullable=True, comment="OSS metadata")
+
+    client_progress = Column(Integer, default=0, comment="非可信上传进度")
+    client_completed_at = Column(DateTime, nullable=True, comment="客户端声明上传完成时间")
+    server_verified_at = Column(
+        DateTime,
+        nullable=True,
+        comment="服务端收到 OSS 完成事件或后续 HeadObject 校验通过时间",
+    )
+    ready_at = Column(DateTime, nullable=True, comment="数据集可用于训练的时间")
+    preprocessing_job_id = Column(
+        String(128), nullable=True, index=True, comment="数据预处理 PAI-DLC Job ID"
+    )
+    error_message = Column(Text, nullable=True, comment="失败原因")
+    expires_at = Column(DateTime, nullable=False, comment="上传会话过期时间")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class ModelUpload(Base):
+    """模型上传会话。
+
+    上传未完成前只记录会话和 OSS multipart 元数据；OSS 合并并校验通过后，
+    再创建 model_versions 主记录，避免半上传模型进入“所有模型”列表。
+    """
+
+    __tablename__ = "model_uploads"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    upload_uuid = Column(
+        String(100), unique=True, nullable=False, index=True, comment="上传会话 ID"
+    )
+    user_id = Column(
+        Integer, ForeignKey("users.id"), nullable=False, index=True, comment="上传用户"
+    )
+    scene_id = Column(
+        Integer,
+        ForeignKey("detection_scenes.id"),
+        nullable=False,
+        index=True,
+        comment="所属检测场景",
+    )
+    model_version_id = Column(
+        Integer,
+        ForeignKey("model_versions.id"),
+        nullable=True,
+        index=True,
+        comment="上传完成后生成的模型版本 ID",
+    )
+
+    model_name = Column(String(100), nullable=False, comment="模型名称")
+    version = Column(String(50), nullable=False, comment="模型版本")
+    model_type = Column(String(50), nullable=False, comment="YOLO 模型类型")
+    status = Column(
+        String(30),
+        nullable=False,
+        default="INITIATED",
+        index=True,
+        comment="INITIATED/UPLOADING/UPLOADED/FAILED/EXPIRED/CANCELLED",
+    )
+
+    bucket = Column(String(128), nullable=False, comment="OSS bucket")
+    object_key = Column(String(500), nullable=False, comment="模型权重对象 key")
+    original_filename = Column(String(255), nullable=False, comment="原始文件名")
+    content_type = Column(String(100), nullable=True, comment="上传对象 MIME 类型")
+    expected_size = Column(BigInteger, nullable=True, comment="客户端声明大小")
+    actual_size = Column(BigInteger, nullable=True, comment="OSS HeadObject 大小")
+    etag = Column(String(128), nullable=True, comment="OSS 对象 ETag")
+    checksum_sha256 = Column(String(128), nullable=True, comment="模型 SHA256")
+    object_metadata = Column("metadata", JSON, nullable=True, comment="上传元数据")
+
+    client_completed_at = Column(DateTime, nullable=True, comment="客户端完成合并时间")
+    server_verified_at = Column(DateTime, nullable=True, comment="服务端校验通过时间")
+    error_message = Column(Text, nullable=True, comment="失败原因")
+    expires_at = Column(DateTime, nullable=False, comment="上传会话过期时间")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    user = relationship("User", back_populates="model_uploads")
+    scene = relationship("DetectionScene", back_populates="model_uploads")
+    model_version = relationship("ModelVersion", back_populates="upload_sessions")
+
+
+class RemoteTrainingJob(Base):
+    """PAI-DLC 远程训练任务映射表。"""
+
+    __tablename__ = "remote_training_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(
+        Integer,
+        ForeignKey("training_tasks.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+        comment="本地业务训练任务 ID",
+    )
+    dataset_upload_id = Column(
+        Integer,
+        ForeignKey("dataset_uploads.id"),
+        nullable=False,
+        index=True,
+        comment="已由 OSS 完成事件确认的 UPLOADED 数据集上传记录",
+    )
+
+    provider = Column(String(20), default="aliyun", comment="远程训练服务商")
+    workspace_id = Column(String(128), nullable=False, comment="PAI 工作空间 ID")
+    resource_id = Column(String(128), nullable=True, comment="PAI 资源配额 ID，可为空")
+    dlc_job_id = Column(
+        String(128), unique=True, nullable=True, index=True, comment="PAI-DLC Job ID"
+    )
+    remote_status = Column(
+        String(30),
+        nullable=False,
+        default="CREATED",
+        index=True,
+        comment="CREATED/SUBMITTED/QUEUED/RUNNING/SUCCEEDED/FAILED/STOPPED",
+    )
+
+    region = Column(String(64), nullable=False, comment="PAI-DLC 地域")
+    image_uri = Column(String(500), nullable=False, comment="训练镜像完整地址")
+    job_type = Column(String(50), default="PyTorchJob", comment="DLC Job 类型")
+    ecs_spec = Column(String(100), nullable=True, comment="公共资源 ECS 规格")
+    pod_count = Column(Integer, default=1, comment="Worker Pod 数量")
+    user_command = Column(Text, nullable=False, comment="容器内执行的训练命令")
+    envs = Column(JSON, nullable=True, comment="注入训练容器的环境变量")
+
+    input_dataset_prefix = Column(String(500), nullable=False, comment="输入数据集 OSS 前缀")
+    output_prefix = Column(String(500), nullable=False, comment="训练输出 OSS 前缀")
+    results_csv_key = Column(String(500), nullable=True, comment="results.csv 对象 key")
+    best_weight_key = Column(String(500), nullable=True, comment="best.pt 对象 key")
+    success_key = Column(String(500), nullable=True, comment="_SUCCESS 对象 key")
+    callback_token_hash = Column(String(128), nullable=True, comment="回调 token SHA256")
+
+    submitted_at = Column(DateTime, nullable=True, comment="CreateJob 成功提交时间")
+    last_synced_at = Column(DateTime, nullable=True, comment="最近一次轮询同步时间")
+    completed_at = Column(DateTime, nullable=True, comment="远程任务完成或停止时间")
+    error_message = Column(Text, nullable=True, comment="远程任务失败原因")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    training_task = relationship("TrainingTask", back_populates="remote_training_job")
+    dataset_upload = relationship("DatasetUpload")
+
+
+class ModelArtifactLocation(Base):
+    """模型与训练产物的实际存放位置。
+
+    同一个模型版本可以有 OSS 权威副本、MinIO 兼容副本和本地推理缓存。
+    业务层通过 model_versions 表识别版本，通过本表查找具体文件位置。
+    """
+
+    __tablename__ = "model_artifact_locations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_version_id = Column(
+        Integer,
+        ForeignKey("model_versions.id"),
+        nullable=True,
+        index=True,
+        comment="关联模型版本，可在导出前为空",
+    )
+    training_task_id = Column(
+        Integer,
+        ForeignKey("training_tasks.id"),
+        nullable=True,
+        index=True,
+        comment="来源训练任务",
+    )
+    artifact_type = Column(
+        String(50),
+        nullable=False,
+        index=True,
+        comment="best_weight/results_csv/eval_report/metrics/success/default_cache",
+    )
+    storage_backend = Column(
+        String(20), nullable=False, comment="oss/local/minio/http"
+    )
+    bucket = Column(String(128), nullable=True, comment="OSS/MinIO bucket")
+    object_key = Column(String(500), nullable=True, comment="OSS/MinIO 对象 key")
+    local_path = Column(String(500), nullable=True, comment="服务端本地缓存路径")
+    url = Column(String(1000), nullable=True, comment="对象 URI 或可访问 URL")
+    content_type = Column(String(100), nullable=True, comment="文件 MIME 类型")
+    file_size = Column(BigInteger, nullable=True, comment="文件大小")
+    etag = Column(String(128), nullable=True, comment="对象存储 ETag")
+    checksum_sha256 = Column(String(128), nullable=True, comment="文件 SHA256")
+    is_primary = Column(Boolean, default=False, comment="是否权威副本")
+    lifecycle_state = Column(
+        String(30), default="active", comment="active/cache/expired/deleted"
+    )
+    object_metadata = Column("metadata", JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    model_version = relationship("ModelVersion", back_populates="artifact_locations")
+    training_task = relationship("TrainingTask", back_populates="artifact_locations")
+
+
 class ModelVersion(Base):
     """模型版本管理表 — 每次训练产出或手动上传的模型版本"""
 
@@ -472,7 +747,7 @@ class ModelVersion(Base):
     )
 
     # 模型文件
-    model_path = Column(String(500), nullable=False, comment="本地模型文件路径")
+    model_path = Column(String(500), nullable=True, comment="本地模型文件路径或 OSS URI")
     minio_url = Column(String(500), nullable=True, comment="MinIO 存储 URL")
 
     # 评估指标（训练完成后写入）
@@ -494,6 +769,12 @@ class ModelVersion(Base):
     # 关联
     scene = relationship("DetectionScene", back_populates="model_versions")
     training_task = relationship("TrainingTask", back_populates="model_versions")
+    artifact_locations = relationship(
+        "ModelArtifactLocation",
+        back_populates="model_version",
+        cascade="all, delete-orphan",
+    )
+    upload_sessions = relationship("ModelUpload", back_populates="model_version")
     detection_tasks = relationship("DetectionTask", back_populates="model_version")
 
 

@@ -174,6 +174,23 @@ bash scripts/server-stop.sh
 
 `server-start.sh` 返回的 `trycloudflare.com` 地址可直接从网络访问，但属于临时审核地址，隧道重启后可能变化。正式长期部署应配置自有域名或由服务器管理员开放反向代理端口。
 
+### QQ 邮箱注册验证码
+
+公开注册默认要求邮箱验证码。先在 QQ 邮箱设置中开启 SMTP 服务并生成授权码，随后在 `backend/.env` 填写：
+
+```env
+EMAIL_VERIFICATION_REQUIRED=true
+SMTP_HOST=smtp.qq.com
+SMTP_PORT=465
+SMTP_USERNAME=your-account@qq.com
+SMTP_PASSWORD=your-smtp-authorization-code
+SMTP_FROM_EMAIL=your-account@qq.com
+SMTP_FROM_NAME=ChestVision
+SMTP_USE_SSL=true
+```
+
+授权码不是 QQ 登录密码，不应提交到 Git。修改配置后需要重启后端服务。
+
 ## 📁 项目结构
 
 ```

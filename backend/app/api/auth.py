@@ -12,8 +12,9 @@ from app.core.security import decode_access_token
 from app.database.session import get_db
 from app.entity.db_models import User
 from app.entity.schemas import TokenResponse, UserLogin, UserRegister, UserResponse
+from app.services.email_verification_service import email_verification_service
 from app.services.user_service import user_service
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from pydantic import BaseModel, EmailStr
@@ -51,6 +52,31 @@ async def get_current_user(
     return user
 
 
+class SendEmailVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+@router.post(
+    "/email-verification/send",
+    status_code=202,
+    summary="发送注册邮箱验证码",
+)
+async def send_email_verification(
+    payload: SendEmailVerificationRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """向未注册邮箱发送一次性验证码。"""
+    request_ip = request.headers.get("cf-connecting-ip")
+    if not request_ip and request.client:
+        request_ip = request.client.host
+    return await email_verification_service.issue_registration_code(
+        db=db,
+        email=str(payload.email),
+        request_ip=request_ip,
+    )
+
+
 @router.post("/register", response_model=UserResponse, status_code=201)
 async def register(request: UserRegister, db: Session = Depends(get_db)):
     """
@@ -60,10 +86,16 @@ async def register(request: UserRegister, db: Session = Depends(get_db)):
     - **email**: 邮箱
     - **password**: 密码（至少 6 位）
     """
+    normalized_email = email_verification_service.normalize_email(str(request.email))
+    email_verification_service.consume_registration_code(
+        db=db,
+        email=normalized_email,
+        code=request.email_code,
+    )
     user = user_service.register(
         db=db,
         username=request.username,
-        email=request.email,
+        email=normalized_email,
         password=request.password,
         user_type=request.user_type,
     )

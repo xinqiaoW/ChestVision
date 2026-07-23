@@ -45,11 +45,13 @@ LangGraph 多 Agent 工作流 — 胸片X光智能分析系统
   result = await graph.ainvoke(initial_state)
 """
 
+import asyncio
 from typing import AsyncGenerator, Literal, Optional
 
 from langgraph.graph import END, StateGraph
 
 from app.agent.nodes import (
+    case_analysis_node,
     detection_node,
     diagnosis_node,
     qa_node,
@@ -99,6 +101,7 @@ def build_agent_graph(llm=None):
     workflow.add_node("detection", _make_node_async(detection_node, llm))
     workflow.add_node("diagnosis", _make_node_async(diagnosis_node, llm))
     workflow.add_node("report", _make_node_async(report_node, llm))
+    workflow.add_node("case_analysis", _make_node_async(case_analysis_node, llm))
     workflow.add_node("qa", _make_node_async(qa_node, llm))
     # 专业 Agent 只产出结果，最终回复由读取完整历史的 Supervisor 统一生成。
     workflow.add_node("supervisor_answer", supervisor.answer)
@@ -115,6 +118,7 @@ def build_agent_graph(llm=None):
             "detection": "detection",
             "diagnosis": "diagnosis",
             "report": "report",
+            "case_analysis": "case_analysis",
             "qa": "qa",
             "summarize": "supervisor_answer",
             "FINISH": "supervisor_answer",
@@ -127,6 +131,7 @@ def build_agent_graph(llm=None):
     # 所有专业结果均回到 Supervisor，由其读取完整历史后统一回答。
     workflow.add_edge("diagnosis", "supervisor_answer")
     workflow.add_edge("report", "supervisor_answer")
+    workflow.add_edge("case_analysis", "supervisor_answer")
     workflow.add_edge("qa", "supervisor_answer")
     workflow.add_edge("supervisor_answer", END)
 
@@ -137,11 +142,13 @@ def build_agent_graph(llm=None):
 
 
 def _route_decision(state: dict) -> Literal[
-    "detection", "diagnosis", "report", "qa", "summarize", "FINISH"
+    "detection", "diagnosis", "report", "case_analysis", "qa", "summarize", "FINISH"
 ]:
     """从 state 中提取 Supervisor 的路由决策"""
     next_agent = state.get("next_agent", "summarize")
-    valid_routes = ["detection", "diagnosis", "report", "qa", "summarize", "FINISH"]
+    valid_routes = [
+        "detection", "diagnosis", "report", "case_analysis", "qa", "summarize", "FINISH"
+    ]
     if next_agent not in valid_routes:
         logger.warning("未知路由: %s，降级为 summarize", next_agent)
         return "summarize"
@@ -175,6 +182,7 @@ async def run_graph_stream(
         "detection": "正在进行胸片病灶检测...",
         "diagnosis": "正在进行综合诊断分析...",
         "report": "正在生成诊断报告...",
+        "case_analysis": "正在分析历史病例并拟定诊疗计划框架...",
         "qa": "正在检索医学知识库...",
         "supervisor_answer": "Supervisor 正在结合对话历史组织回复...",
     }
@@ -248,11 +256,13 @@ async def run_graph_stream(
                     "type": "text_chunk",
                     "content": final_response[i:i + chunk_size],
                 }
+                await asyncio.sleep(0.018)
         else:
             # 检查是否有其他产出（qa_result, report_result 等）
             alt_response = (
                 accumulated_state.get("qa_result")
                 or accumulated_state.get("report_result")
+                or (accumulated_state.get("case_analysis_result") or {}).get("analysis")
                 or accumulated_state.get("final_response")
                 or ""
             )
@@ -260,6 +270,7 @@ async def run_graph_stream(
                 chunk_size = 15
                 for i in range(0, len(alt_response), chunk_size):
                     yield {"type": "text_chunk", "content": alt_response[i:i + chunk_size]}
+                    await asyncio.sleep(0.018)
             else:
                 yield {
                     "type": "text_chunk",

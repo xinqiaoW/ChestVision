@@ -30,6 +30,7 @@ class MultiAgentState(TypedDict):
        - "detection"  → 病灶检测 Agent
        - "diagnosis"   → 综合诊断 Agent
        - "report"      → 报告生成 Agent
+       - "case_analysis" → 历史病例分析 Agent
        - "qa"          → 医学知识问答 Agent
        - "summarize"   → 汇总输出
        - "FINISH"      → 结束"""
@@ -51,6 +52,9 @@ class MultiAgentState(TypedDict):
 
     qa_result: str
     """知识问答 Agent 产出：基于 RAG 的知识回答"""
+
+    case_analysis_result: dict
+    """历史病例分析 Agent 产出：授权病例、检测历史及诊疗计划框架"""
 
     # ── 汇总输出 ──
     final_response: str

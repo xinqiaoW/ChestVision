@@ -465,9 +465,9 @@ class DetectionService:
             }
 
         except Exception as e:
-            logger.error("LLM 病史分析失败: %s", str(e))
+            logger.error("LLM 病史分析失败: %s", str(e), exc_info=True)
             return {
-                "analysis_report": f"AI 分析暂时不可用：{str(e)}",
+                "analysis_report": "AI 分析暂时不可用，请稍后重试",
                 "risk_level": "medium",
                 "referenced_record_ids": [],
             }
@@ -575,7 +575,8 @@ class DetectionService:
             result["zip_filename"] = os.path.basename(zip_path)
             return result
         except zipfile.BadZipFile:
-            return {"error": f"无效的 ZIP 文件: {zip_path}"}
+            logger.warning("ZIP 文件解析失败: %s", zip_path)
+            return {"error": "无效的 ZIP 文件"}
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

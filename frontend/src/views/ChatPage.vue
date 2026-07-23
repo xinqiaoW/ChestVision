@@ -231,9 +231,11 @@
                             ? "📋"
                             : an.node === "report"
                               ? "📄"
-                              : an.node === "qa"
-                                ? "📚"
-                                : "📝"
+                              : an.node === "case_analysis"
+                                ? "🗂️"
+                                : an.node === "qa"
+                                  ? "📚"
+                                  : "📝"
                     }}</span>
                     <span class="agent-node-label">{{ an.label }}</span>
                   </div>
@@ -476,23 +478,50 @@ async function sendMsg() {
   ) {
     agentStore.addMessage({ role: "assistant", content: "", loading: true });
     scrollBottom();
-    try {
-      const res = await request.post("/reports/generate", {
+    let reportContent = "";
+    const stopReport = streamChat(
+      "/api/reports/generate/stream",
+      {
         task_id: latestDetectionTaskId.value || 0,
         instructions: text,
-      });
-      const aiMsg = agentStore.messages[agentStore.messages.length - 1];
-      aiMsg.content = res.content;
-      aiMsg.downloadPdfUrl = res.pdf_url;
-      latestDetectionTaskId.value = res.task_id;
-      aiMsg.loading = false;
-    } catch (e) {
-      const aiMsg = agentStore.messages[agentStore.messages.length - 1];
-      aiMsg.content = `生成报告失败：${e.response?.data?.detail || e.message}`;
-      aiMsg.loading = false;
-    }
-    agentStore.setLoading(false);
-    scrollBottom();
+      },
+      {
+        onMessage: (data) => {
+          const aiMsg = agentStore.messages[agentStore.messages.length - 1];
+          if (!aiMsg) return;
+          if (data.type === "thinking") {
+            aiMsg.content = data.content || "正在生成深度报告...";
+          } else if (data.type === "text_chunk") {
+            reportContent += data.content || "";
+            aiMsg.content = reportContent;
+            aiMsg.loading = false;
+            scrollBottom();
+          } else if (data.type === "report_ready") {
+            aiMsg.downloadPdfUrl = data.pdf_url;
+            latestDetectionTaskId.value = data.task_id;
+            scrollBottom();
+          } else if (data.type === "error") {
+            aiMsg.content = data.content || "生成报告失败";
+            aiMsg.loading = false;
+          }
+        },
+        onDone: () => {
+          const aiMsg = agentStore.messages[agentStore.messages.length - 1];
+          if (aiMsg) aiMsg.loading = false;
+          agentStore.setLoading(false);
+          scrollBottom();
+        },
+        onError: (error) => {
+          const aiMsg = agentStore.messages[agentStore.messages.length - 1];
+          if (aiMsg) {
+            aiMsg.content = `生成报告失败：${error.message}`;
+            aiMsg.loading = false;
+          }
+          agentStore.setLoading(false);
+        },
+      },
+    );
+    agentStore.abortController = stopReport;
     return;
   }
 
@@ -546,6 +575,7 @@ async function sendMsg() {
           detection: "🔬 病灶检测",
           diagnosis: "📋 综合诊断",
           report: "📄 报告生成",
+          case_analysis: "🗂️ 历史病例分析",
           qa: "📚 知识问答",
           summarize: "📝 汇总输出",
         };

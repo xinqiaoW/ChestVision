@@ -12,12 +12,14 @@ Multi-Agent 节点实现 — 胸片X光智能分析系统
 """
 
 import json
+import re
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.agent.prompts import (
+    CASE_HISTORY_ANALYSIS_PROMPT,
     CHESTX_DIAGNOSIS_PROMPT,
     CHESTX_QA_PROMPT,
     CHESTX_REPORT_PROMPT,
@@ -661,7 +663,312 @@ async def report_node(state: dict, llm: ChatOpenAI = None) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
-# 4. 知识问答 Agent 节点
+# 4. 历史病例分析 Agent 节点
+# ══════════════════════════════════════════════════════════════
+
+
+def _case_analysis_fallback(profile, records: list, tasks: list) -> str:
+    """LLM 不可用或输出越界时，基于数据库事实生成安全的计划框架。"""
+    timeline = []
+    for record in records:
+        visit_time = record.visit_date or record.created_at
+        date_text = visit_time.strftime("%Y-%m-%d") if visit_time else "日期未记录"
+        facts = [
+            f"类型：{record.record_type or '未记录'}",
+            f"主诉：{record.chief_complaint or '未记录'}",
+            f"诊断：{json.dumps(record.diagnosis, ensure_ascii=False) if record.diagnosis else '未记录'}",
+        ]
+        if record.treatment_plan:
+            facts.append(f"历史治疗方案记录：{record.treatment_plan}")
+        timeline.append(f"- {date_text}（病例 #{record.id}）：" + "；".join(facts))
+
+    detections = []
+    for task in tasks:
+        task_time = task.completed_at or task.created_at
+        date_text = task_time.strftime("%Y-%m-%d") if task_time else "日期未记录"
+        lesion_counts: dict[str, int] = {}
+        for result in task.results or []:
+            lesion = result.class_name_cn or LESION_CN_MAP.get(
+                result.class_name, result.class_name
+            )
+            lesion_counts[lesion] = lesion_counts.get(lesion, 0) + 1
+        lesion_text = "、".join(
+            f"{name}×{count}" for name, count in sorted(lesion_counts.items())
+        ) or "未记录具体病灶"
+        detections.append(
+            f"- {date_text}（检测任务 #{task.id}）：{lesion_text}；风险等级：{task.risk_level or '未记录'}"
+        )
+
+    timeline_text = "\n".join(timeline) or "- 暂无历史病例记录。"
+    detection_text = "\n".join(detections) or "- 暂无历史胸片检测记录。"
+    allergies = profile.allergies or "未记录（制定方案前需核实）"
+    return (
+        "### 病例时间线与已知事实\n"
+        f"患者编号：{profile.patient_code}；过敏史：{allergies}。\n\n"
+        f"{timeline_text}\n\n历史胸片检测：\n{detection_text}\n\n"
+        "### 趋势、风险与冲突\n"
+        "现有信息仅能用于整理既往记录；需由医生对照历次症状、影像和检查结果，判断病情变化，"
+        "并核实诊断是否重复或冲突。过敏史未记录时，不应直接形成用药决定。\n\n"
+        "### 诊疗计划框架\n"
+        "1. 先复核当前症状、生命体征和本次就诊目标；\n"
+        "2. 将当前影像与历史胸片逐次对照，确认病灶是否新增、扩大或缓解；\n"
+        "3. 复核历史方案的执行情况、疗效和不良反应；\n"
+        "4. 由临床医生结合面诊和必要检查，与患者共同确定治疗、复查和转诊安排。\n\n"
+        "### 需补充或复核的信息\n"
+        "需补充当前症状持续时间、基础疾病、完整用药与过敏史、相关化验及既往影像原片。\n\n"
+        "### 随访与危险信号\n"
+        "建议按临床医生确定的时间随访；若出现突发或加重的呼吸困难、胸痛、咯血、意识改变等，"
+        "应立即就医。\n\n"
+        "> 本分析仅供临床决策支持，具体方案由有资质医师面诊后确定。"
+    )
+
+
+async def case_analysis_node(state: dict, llm: ChatOpenAI = None) -> dict:
+    """读取当前授权患者的病例与检测历史，形成可追溯的诊疗计划参考。"""
+    from app.database.session import SessionLocal
+    from app.entity.db_models import (
+        DetectionTask,
+        DoctorPatientRelation,
+        MedicalRecord,
+        PatientProfile,
+        User,
+    )
+
+    user_id = state.get("user_id")
+    patient_profile_id = state.get("patient_profile_id")
+    user_request = _get_user_message(state)
+    db = SessionLocal()
+
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return {
+                "case_analysis_result": {
+                    "status": "error",
+                    "analysis": "当前用户不存在，无法读取病例历史。",
+                },
+                "next_agent": "summarize",
+            }
+
+        # 患者无需手动选择，自动使用自己的档案；医生和管理员必须明确选中患者。
+        if not patient_profile_id and user.user_type == "patient":
+            own_profile = (
+                db.query(PatientProfile)
+                .filter(
+                    PatientProfile.user_id == user.id,
+                    PatientProfile.is_active.is_(True),
+                )
+                .first()
+            )
+            patient_profile_id = own_profile.id if own_profile else None
+
+        if not patient_profile_id:
+            return {
+                "case_analysis_result": {
+                    "status": "patient_required",
+                    "analysis": "请先在对话页选择患者，再请求基于历史病例制定诊疗计划。",
+                },
+                "next_agent": "summarize",
+            }
+
+        profile = (
+            db.query(PatientProfile)
+            .filter(
+                PatientProfile.id == patient_profile_id,
+                PatientProfile.is_active.is_(True),
+            )
+            .first()
+        )
+        if not profile:
+            return {
+                "case_analysis_result": {
+                    "status": "not_found",
+                    "analysis": "未找到所选患者档案，请重新选择患者。",
+                },
+                "next_agent": "summarize",
+            }
+
+        authorized = user.user_type == "admin" or user.is_superuser
+        if user.user_type == "patient":
+            authorized = profile.user_id == user.id
+        elif user.user_type == "doctor" and not authorized:
+            authorized = (
+                db.query(DoctorPatientRelation.id)
+                .filter(
+                    DoctorPatientRelation.doctor_id == user.id,
+                    DoctorPatientRelation.patient_id == profile.user_id,
+                    DoctorPatientRelation.relation_status == "active",
+                )
+                .first()
+                is not None
+            )
+
+        if not authorized:
+            logger.warning(
+                "用户 %s 尝试读取未授权患者档案 %s", user.id, patient_profile_id
+            )
+            return {
+                "case_analysis_result": {
+                    "status": "forbidden",
+                    "analysis": "您无权读取该患者的历史病例，请选择已建立医患关系的患者。",
+                },
+                "next_agent": "summarize",
+            }
+
+        records = (
+            db.query(MedicalRecord)
+            .filter(MedicalRecord.patient_profile_id == profile.id)
+            .order_by(
+                MedicalRecord.visit_date.desc().nullslast(),
+                MedicalRecord.created_at.desc(),
+            )
+            .limit(8)
+            .all()
+        )
+        tasks = (
+            db.query(DetectionTask)
+            .filter(
+                DetectionTask.patient_profile_id == profile.id,
+                DetectionTask.status == "completed",
+            )
+            .order_by(
+                DetectionTask.completed_at.desc().nullslast(),
+                DetectionTask.created_at.desc(),
+            )
+            .limit(5)
+            .all()
+        )
+
+        fallback = _case_analysis_fallback(profile, records, tasks)
+        record_context = [
+            {
+                "id": record.id,
+                "visit_date": (record.visit_date or record.created_at).isoformat()
+                if (record.visit_date or record.created_at)
+                else None,
+                "record_type": record.record_type,
+                "chief_complaint": record.chief_complaint,
+                "present_illness": record.present_illness,
+                "past_history": record.past_history,
+                "family_history": record.family_history,
+                "physical_examination": record.physical_examination,
+                "auxiliary_exams": record.auxiliary_exams,
+                "diagnosis": record.diagnosis,
+                "historical_treatment_plan": record.treatment_plan,
+                "historical_prescription": record.prescription,
+                "doctor_notes": record.doctor_notes,
+                "status": record.record_status,
+            }
+            for record in records
+        ]
+        detection_context = []
+        for task in tasks:
+            detection_context.append(
+                {
+                    "task_id": task.id,
+                    "completed_at": (task.completed_at or task.created_at).isoformat()
+                    if (task.completed_at or task.created_at)
+                    else None,
+                    "total_objects": task.total_objects,
+                    "risk_level": task.risk_level,
+                    "analysis_report": task.analysis_report,
+                    "analysis_suggestion": task.analysis_suggestion,
+                    "lesions": [
+                        {
+                            "name": result.class_name_cn
+                            or LESION_CN_MAP.get(result.class_name, result.class_name),
+                            "confidence": result.confidence,
+                        }
+                        for result in (task.results or [])
+                    ],
+                }
+            )
+
+        patient_context = {
+            "patient_code": profile.patient_code,
+            "age": profile.age,
+            "gender": profile.gender,
+            "blood_type": profile.blood_type,
+            "allergies": profile.allergies,
+            "department": profile.department,
+            "notes": profile.notes,
+        }
+        prompt = CASE_HISTORY_ANALYSIS_PROMPT.format(
+            user_request=user_request,
+            patient_context=json.dumps(patient_context, ensure_ascii=False, default=str),
+            record_context=json.dumps(record_context, ensure_ascii=False, default=str),
+            detection_context=json.dumps(detection_context, ensure_ascii=False, default=str),
+        )
+
+        analysis = fallback
+        try:
+            if llm is None:
+                from app.agent.detection_agent import create_llm
+                llm = create_llm()
+            response = await llm.ainvoke(
+                [
+                    SystemMessage(
+                        content="你是历史病例分析 Agent，只能依据给定数据库记录提供临床决策支持。"
+                    ),
+                    HumanMessage(content=prompt),
+                ]
+            )
+            candidate = (
+                response.content if hasattr(response, "content") else str(response)
+            )
+            required_sections = [
+                "病例时间线与已知事实",
+                "趋势、风险与冲突",
+                "诊疗计划框架",
+                "需补充或复核的信息",
+                "随访与危险信号",
+            ]
+            contains_dose = bool(
+                re.search(
+                    r"\d+(?:\.\d+)?\s*(?:mg|ml|毫克|毫升|片|粒|次/日)",
+                    candidate,
+                    re.I,
+                )
+                or re.search(r"建议(?:使用|给予|服用)|首选.{0,12}药", candidate)
+            )
+            if (
+                len(candidate.strip()) >= 300
+                and all(section in candidate for section in required_sections)
+                and not contains_dose
+            ):
+                analysis = candidate.strip()
+            else:
+                logger.warning("历史病例分析输出未通过安全/结构校验，使用事实兜底")
+        except Exception as exc:
+            logger.error("历史病例分析 Agent 调用失败: %s", str(exc), exc_info=True)
+
+        return {
+            "case_analysis_result": {
+                "status": "completed",
+                "patient_code": profile.patient_code,
+                "record_count": len(records),
+                "detection_count": len(tasks),
+                "referenced_record_ids": [record.id for record in records],
+                "referenced_task_ids": [task.id for task in tasks],
+                "analysis": analysis,
+            },
+            "next_agent": "summarize",
+        }
+    except Exception as exc:
+        logger.error("历史病例分析节点失败: %s", str(exc), exc_info=True)
+        return {
+            "case_analysis_result": {
+                "status": "error",
+                "analysis": "历史病例读取失败，请稍后重试。",
+            },
+            "next_agent": "summarize",
+        }
+    finally:
+        db.close()
+
+
+# ══════════════════════════════════════════════════════════════
+# 5. 知识问答 Agent 节点
 # ══════════════════════════════════════════════════════════════
 
 

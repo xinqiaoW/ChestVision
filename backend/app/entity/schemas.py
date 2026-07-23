@@ -12,7 +12,7 @@ Pydantic 请求/响应模型
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 Yolo11ModelName = Literal["yolo11n", "yolo11s", "yolo11m", "yolo11l", "yolo11x"]
 ModelDataSplit = Literal["train", "val", "test"]
@@ -28,8 +28,15 @@ class UserRegister(BaseModel):
     """用户注册请求"""
 
     username: str = Field(..., min_length=3, max_length=50, description="用户名")
-    email: str = Field(..., description="邮箱")
+    email: EmailStr = Field(..., description="邮箱")
     password: str = Field(..., min_length=6, max_length=100, description="密码")
+    email_code: Optional[str] = Field(
+        default=None,
+        min_length=6,
+        max_length=6,
+        pattern=r"^\d{6}$",
+        description="注册邮箱收到的 6 位验证码",
+    )
     user_type: Literal["doctor", "patient"] = Field(
         default="patient",
         description="公开注册仅允许医生或患者；管理员账号由系统初始化或管理员创建",

@@ -6,6 +6,7 @@ Supervisor 路由 Agent — 胸片X光多智能体系统的任务调度中心
   - detection  → 胸片病灶检测（上传图片/要求检测）
   - diagnosis  → 综合诊断分析（结合检测结果+病史）
   - report     → 诊断报告生成
+  - case_analysis → 结合历史病例形成诊疗计划框架
   - qa         → 医学知识问答（RAG检索增强）
   - summarize  → 直接回复（无需工具调用）
 
@@ -36,6 +37,7 @@ AgentRoute = Literal[
     "detection",
     "diagnosis",
     "report",
+    "case_analysis",
     "qa",
     "summarize",
     "FINISH",
@@ -110,6 +112,16 @@ class SupervisorAgent:
             "[附件视频路径:", "[附件ZIP路径:",
         ]):
             return "detection"
+
+        # 治疗/诊疗/随访计划必须先读取当前患者历史病例。
+        case_analysis_keywords = [
+            "治疗计划", "治疗方案", "诊疗计划", "诊疗方案", "用药计划",
+            "随访计划", "康复计划", "制定方案", "怎么治疗", "如何治疗",
+            "后续治疗", "治疗建议", "下一步治疗", "处置计划", "复查计划",
+            "如何处置", "后续怎么处理",
+        ]
+        if any(kw in message for kw in case_analysis_keywords):
+            return "case_analysis"
 
         # ══════════════════════════════════════════════════════
         # 1.5 回顾性查询 → diagnosis（优先于 detection 判断）
@@ -203,7 +215,9 @@ class SupervisorAgent:
         route_text = (response.content if hasattr(response, "content")
                       else str(response)).strip().lower()
 
-        valid_routes = ["detection", "diagnosis", "report", "qa", "summarize", "finish"]
+        valid_routes = [
+            "detection", "diagnosis", "report", "case_analysis", "qa", "summarize", "finish"
+        ]
         for valid in valid_routes:
             if valid in route_text:
                 return "FINISH" if valid == "finish" else valid  # type: ignore[return-value]
@@ -247,6 +261,8 @@ class SupervisorAgent:
                 "才可告知用户可通过消息下方的按钮下载 PDF。"
                 "若专业结果与明确的历史事实冲突，以系统身份信息、真实检测数据和数据库"
                 "上下文为准。医学结论须说明仅供辅助参考，最终诊断由临床医生结合实际判断。"
+                "当 routed_agent 为 case_analysis 时，只能使用 case_analysis_result 中的病例事实，"
+                "不得新增药品名称、剂量或频次，并须明确指出仍需补充或由医生复核的信息。"
             )
         )
         result_prompt = SystemMessage(
@@ -376,6 +392,7 @@ class SupervisorAgent:
                 )
             ),
             "qa_result": state.get("qa_result", ""),
+            "case_analysis_result": state.get("case_analysis_result", {}),
             "knowledge_sources": [
                 {
                     "source": source.get("source"),
@@ -389,6 +406,9 @@ class SupervisorAgent:
 
     @staticmethod
     def _fallback_response(state: dict) -> str:
+        case_analysis = state.get("case_analysis_result", {}) or {}
+        if case_analysis.get("analysis"):
+            return case_analysis["analysis"]
         if state.get("report_result"):
             return state["report_result"]
         if state.get("qa_result"):

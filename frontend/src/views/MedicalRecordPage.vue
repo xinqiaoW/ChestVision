@@ -17,7 +17,7 @@
     <div class="filter-bar">
       <el-select
         v-model="filterPatientId"
-        placeholder="全部类型"
+        placeholder="全部患者"
         clearable
         @change="fetchRecords"
         style="width: 180px"
@@ -113,6 +113,29 @@
       :close-on-click-modal="false"
     >
       <el-form :model="form" label-width="90px" label-position="top">
+        <el-form-item v-if="!editingRecord" label="患者" required>
+          <el-select
+            v-model="form.patient_profile_id"
+            placeholder="请选择患者"
+            filterable
+            clearable
+            :loading="loadingPatients"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="p in patientOptions"
+              :key="p.id"
+              :label="`${p.patient_code} ${p.real_name || p.username || ''}`"
+              :value="p.id"
+            />
+          </el-select>
+          <div
+            v-if="!loadingPatients && !patientOptions.length"
+            class="patient-select-empty"
+          >
+            暂无可选患者，请先在患者管理中建立医患关系。
+          </div>
+        </el-form-item>
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="就诊类型">
@@ -129,6 +152,7 @@
               <el-date-picker
                 v-model="form.visit_date"
                 type="date"
+                value-format="YYYY-MM-DD"
                 style="width: 100%"
                 placeholder="选择日期"
               />
@@ -365,9 +389,11 @@ async function fetchPatientOptions() {
   if (!canEdit.value) return;
   loadingPatients.value = true;
   try {
-    patientOptions.value = (await getPatients()).items;
-  } catch {
-    /* ignore */
+    const response = await getPatients();
+    patientOptions.value = response.items || [];
+  } catch (error) {
+    patientOptions.value = [];
+    ElMessage.error(error.response?.data?.detail || "加载患者列表失败");
   } finally {
     loadingPatients.value = false;
   }
@@ -382,7 +408,7 @@ async function showDetail(row) {
   }
 }
 
-function showCreateDialog() {
+async function showCreateDialog() {
   editingRecord.value = null;
   form.value = {
     patient_profile_id: filterPatientId.value || null,
@@ -398,6 +424,9 @@ function showCreateDialog() {
     visit_date: null,
   };
   formVisible.value = true;
+  if (!patientOptions.value.length) {
+    await fetchPatientOptions();
+  }
 }
 
 async function fetchAttachments(recordId) {
@@ -584,5 +613,12 @@ onMounted(() => {
   padding: 60px 20px;
   color: $text-secondary;
   font-size: 14px;
+}
+
+.patient-select-empty {
+  margin-top: 6px;
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>
