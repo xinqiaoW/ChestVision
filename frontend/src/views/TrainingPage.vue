@@ -128,7 +128,7 @@
             ></el-col>
           </el-row>
         </el-tab-pane>
-        <el-tab-pane v-if="hasTrainingError" label="错误信息" name="error">
+        <el-tab-pane v-if="hasTrainingError" label="训练日志" name="error">
           <div class="training-error-panel">
             <div class="training-error-toolbar">
               <el-alert
@@ -138,7 +138,7 @@
                 :closable="false"
               />
               <el-button :icon="Download" @click="downloadTrainingError">
-                下载错误信息
+                下载训练日志
               </el-button>
             </div>
             <el-scrollbar height="360px" class="training-error-scrollbar">
@@ -159,74 +159,15 @@
         <div class="card-header"><span>模型操作</span></div>
       </template>
       <el-space wrap>
-        <el-button type="primary" @click="validateModel" :loading="validating"
-          >评估模型</el-button
+        <el-button
+          :icon="Download"
+          :loading="reportExporting"
+          @click="exportTrainingReport"
         >
-        <el-button type="success" @click="exportModel" :loading="exporting"
-          >导出模型</el-button
-        >
+          导出训练报告
+        </el-button>
         <el-button @click="downloadModel">下载权重</el-button>
-        <el-button type="warning" @click="showPredictDialog = true"
-          >测试验证</el-button
-        >
       </el-space>
-    </el-card>
-
-    <!-- 【Day 7 新增】评估报告面板 -->
-    <el-card v-if="evalReport" class="eval-card" shadow="never">
-      <template #header>
-        <div class="card-header">
-          <span
-            >评估报告
-            <el-tag size="small" style="margin-left: 8px">{{
-              evalReport.split === "val" ? "验证集" : "测试集"
-            }}</el-tag>
-          </span>
-        </div>
-      </template>
-      <el-row :gutter="16" class="metric-cards">
-        <el-col :span="6" v-for="item in evalMetricCards" :key="item.label">
-          <el-card shadow="hover" class="metric-item">
-            <div class="metric-value" :style="{ color: item.color }">
-              {{ item.value }}
-            </div>
-            <div class="metric-label">{{ item.label }}</div>
-          </el-card>
-        </el-col>
-      </el-row>
-      <el-table :data="perClassData" stripe style="margin-top: 16px">
-        <el-table-column prop="class_name" label="类别" width="160" />
-        <el-table-column prop="ap50" label="AP@50" width="120">
-          <template #default="{ row }">
-            <span :style="{ color: row.ap50 < 0.5 ? '#f56c6c' : '#67c23a' }">
-              {{ (row.ap50 * 100).toFixed(1) }}%
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="ap50_95" label="AP@50-95" width="120">
-          <template #default="{ row }"
-            >{{ (row.ap50_95 * 100).toFixed(1) }}%</template
-          >
-        </el-table-column>
-        <el-table-column label="评价">
-          <template #default="{ row }">
-            <el-tag
-              :type="
-                row.ap50 >= 0.8
-                  ? 'success'
-                  : row.ap50 >= 0.5
-                    ? 'warning'
-                    : 'danger'
-              "
-              size="small"
-            >
-              {{
-                row.ap50 >= 0.8 ? "优秀" : row.ap50 >= 0.5 ? "一般" : "需改进"
-              }}
-            </el-tag>
-          </template>
-        </el-table-column>
-      </el-table>
     </el-card>
 
     <el-dialog
@@ -308,12 +249,6 @@
             <el-option label="512" :value="512" />
           </el-select>
         </el-form-item>
-        <el-form-item label="训练设备">
-          <el-radio-group v-model="trainForm.device">
-            <el-radio value="cpu">CPU (本地)</el-radio>
-            <el-radio value="0">GPU:0</el-radio>
-          </el-radio-group>
-        </el-form-item>
         <el-form-item label="优化器">
           <el-select v-model="trainForm.optimizer">
             <el-option label="SGD (推荐)" value="SGD" />
@@ -338,82 +273,6 @@
       </template>
     </el-dialog>
 
-    <!-- 【Day 7 新增】测试图验证对话框 -->
-    <el-dialog v-model="showPredictDialog" title="测试图验证" width="800px">
-      <el-form label-width="100px">
-        <el-form-item label="测试图片">
-          <el-upload
-            :auto-upload="false"
-            :limit="1"
-            accept="image/*"
-            :on-change="onPredictFileChange"
-            list-type="picture"
-          >
-            <el-button type="primary">选择图片</el-button>
-          </el-upload>
-        </el-form-item>
-        <el-form-item label="置信度阈值">
-          <el-slider
-            v-model="predictConf"
-            :min="0.05"
-            :max="0.95"
-            :step="0.05"
-            show-input
-          />
-        </el-form-item>
-        <el-form-item label="IoU 阈值">
-          <el-slider
-            v-model="predictIou"
-            :min="0.1"
-            :max="0.9"
-            :step="0.05"
-            show-input
-          />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showPredictDialog = false">关闭</el-button>
-        <el-button type="primary" @click="doPredict" :loading="predictLoading"
-          >开始检测</el-button
-        >
-      </template>
-
-      <div v-if="predictResult" style="margin-top: 16px">
-        <el-descriptions :column="3" border size="small">
-          <el-descriptions-item label="检测目标数">{{
-            predictResult.total_objects
-          }}</el-descriptions-item>
-          <el-descriptions-item label="推理耗时"
-            >{{ predictResult.inference_time }}ms</el-descriptions-item
-          >
-          <el-descriptions-item label="文件名">{{
-            predictResult.filename
-          }}</el-descriptions-item>
-        </el-descriptions>
-        <div v-if="predictResult.annotated_image" style="margin-top: 12px">
-          <img
-            :src="'data:image/jpeg;base64,' + predictResult.annotated_image"
-            style="max-width: 100%; border-radius: 4px"
-          />
-        </div>
-        <el-table
-          :data="predictResult.detections"
-          stripe
-          style="margin-top: 12px"
-          max-height="200"
-        >
-          <el-table-column prop="class_name" label="类别" width="120" />
-          <el-table-column prop="confidence" label="置信度" width="100">
-            <template #default="{ row }"
-              >{{ (row.confidence * 100).toFixed(1) }}%</template
-            >
-          </el-table-column>
-          <el-table-column label="边界框" width="200">
-            <template #default="{ row }">{{ row.bbox.join(", ") }}</template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </el-dialog>
   </div>
 </template>
 
@@ -431,6 +290,7 @@ const taskList = ref([]);
 const loadingTasks = ref(false);
 const selectedTask = ref(null);
 const monitorRefreshing = ref(false);
+const reportExporting = ref(false);
 const lastMonitorRefreshAt = ref(null);
 const refreshClockNow = ref(Date.now());
 const monitorActiveTab = ref("metrics");
@@ -473,17 +333,6 @@ const filteredTrainingDatasets = computed(() => {
   );
 });
 
-// 【Day 7 新增】模型操作状态
-const validating = ref(false);
-const exporting = ref(false);
-const evalReport = ref(null);
-const showPredictDialog = ref(false);
-const predictConf = ref(0.25);
-const predictIou = ref(0.45);
-const predictLoading = ref(false);
-const predictResult = ref(null);
-let predictFile = null;
-
 const trainForm = ref({
   scene_id: null,
   dataset_id: "",
@@ -491,7 +340,6 @@ const trainForm = ref({
   epochs: 50,
   batch_size: 8,
   img_size: 640,
-  device: "cpu",
   optimizer: "SGD",
   lr0: 0.01,
 });
@@ -536,34 +384,6 @@ const metricCards = computed(() => {
   ];
 });
 
-// 【Day 7 新增】评估报告计算属性
-const evalMetricCards = computed(() => {
-  if (!evalReport.value) return [];
-  const o = evalReport.value.overall;
-  return [
-    {
-      label: "mAP@50",
-      value: o.map50 != null ? (o.map50 * 100).toFixed(1) + "%" : "-",
-      color: "#409eff",
-    },
-    {
-      label: "mAP@50-95",
-      value: o.map50_95 != null ? (o.map50_95 * 100).toFixed(1) + "%" : "-",
-      color: "#67c23a",
-    },
-    {
-      label: "Precision",
-      value: o.precision != null ? (o.precision * 100).toFixed(1) + "%" : "-",
-      color: "#e6a23c",
-    },
-    {
-      label: "Recall",
-      value: o.recall != null ? (o.recall * 100).toFixed(1) + "%" : "-",
-      color: "#f56c6c",
-    },
-  ];
-});
-
 const monitorRefreshLabel = computed(() => {
   if (!lastMonitorRefreshAt.value) return "刷新";
   return `刷新 · ${formatRefreshAge(lastMonitorRefreshAt.value, refreshClockNow.value)}前`;
@@ -599,18 +419,6 @@ const trainingErrorText = computed(() => {
     error: selectedTask.value?.error_message || "训练失败",
   };
   return JSON.stringify(detail, null, 2);
-});
-
-const perClassData = computed(() => {
-  if (!evalReport.value) return [];
-  const pc = evalReport.value.per_class || {};
-  return Object.entries(pc)
-    .map(([name, m]) => ({
-      class_name: name,
-      ap50: m.ap50,
-      ap50_95: m.ap50_95,
-    }))
-    .sort((a, b) => b.ap50 - a.ap50);
 });
 
 function statusType(s) {
@@ -667,13 +475,22 @@ function errorStageText(stage) {
 
 function downloadTrainingError() {
   if (!selectedTask.value) return;
-  const blob = new Blob([trainingErrorText.value], {
+  downloadJson(
+    trainingErrorDetail.value || {
+      error: selectedTask.value.error_message || "训练失败",
+    },
+    `training-log-${selectedTask.value.task_uuid || selectedTask.value.id}.json`,
+  );
+}
+
+function downloadJson(payload, filename) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
     type: "application/json;charset=utf-8",
   });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `training-error-${selectedTask.value.task_uuid || selectedTask.value.id}.json`;
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -1059,45 +876,6 @@ async function stopTask(task) {
   }
 }
 
-// 【Day 7 新增】模型操作：评估
-async function validateModel() {
-  if (!selectedTask.value) return;
-  validating.value = true;
-  try {
-    const taskId = selectedTask.value.id || selectedTask.value.task?.id;
-    const res = await request.post(`/training/validate/${taskId}`, {
-      split: "val",
-      conf: 0.001,
-      iou: 0.6,
-    });
-    evalReport.value = res;
-    ElMessage.success(
-      `评估完成: mAP@50=${(res.overall.map50 * 100).toFixed(1)}%`,
-    );
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || "评估失败");
-  } finally {
-    validating.value = false;
-  }
-}
-
-// 【Day 7 新增】模型操作：导出
-async function exportModel() {
-  if (!selectedTask.value) return;
-  exporting.value = true;
-  try {
-    const taskId = selectedTask.value.id || selectedTask.value.task?.id;
-    const res = await request.post(`/training/export/${taskId}`, {
-      set_default: false,
-    });
-    ElMessage.success(`模型已导出: ${res.version}`);
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || "导出失败");
-  } finally {
-    exporting.value = false;
-  }
-}
-
 // 【Day 7 新增】模型操作：下载
 async function downloadModel() {
   if (!selectedTask.value) return;
@@ -1124,32 +902,60 @@ async function downloadModel() {
   }
 }
 
-// 【Day 7 新增】测试图验证：选择文件
-function onPredictFileChange(file) {
-  predictFile = file.raw;
-  predictResult.value = null;
-}
-
-// 【Day 7 新增】测试图验证：执行预测
-async function doPredict() {
-  if (!predictFile || !selectedTask.value) return;
-  predictLoading.value = true;
+async function exportTrainingReport() {
+  if (!selectedTask.value) return;
+  reportExporting.value = true;
   try {
-    const taskId = selectedTask.value.id || selectedTask.value.task?.id;
-    const form = new FormData();
-    form.append("file", predictFile);
-    form.append("task_id", taskId);
-    form.append("conf", predictConf.value);
-    form.append("iou", predictIou.value);
-    const res = await request.post("/training/predict", form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-    predictResult.value = res;
-    ElMessage.success(`检测到 ${res.total_objects} 个目标`);
+    const task = selectedTask.value;
+    const taskId = task.id || task.task?.id;
+    const [metricsRes, artifactsRes] = await Promise.all([
+      request.get(`/training/metrics/${taskId}`, { silent: true }),
+      isRemoteTask(task)
+        ? request
+            .get(`/training/remote/artifacts/${taskId}`, { silent: true })
+            .catch(() => ({ items: [] }))
+        : Promise.resolve({ items: [] }),
+    ]);
+    const metrics = metricsRes.metrics || [];
+    const latestMetric = metrics.at(-1) || task.latest_metric || null;
+    const report = {
+      report_type: "training_report",
+      generated_at: new Date().toISOString(),
+      task: {
+        id: task.id,
+        task_uuid: task.task_uuid,
+        status: task.status,
+        model_name: task.model_name,
+        device: task.device,
+        epochs: task.epochs,
+        current_epoch: task.current_epoch,
+        progress: task.progress,
+        img_size: task.img_size,
+        batch_size: task.batch_size,
+        optimizer: task.optimizer,
+        lr0: task.lr0,
+        dataset_path: task.dataset_path,
+        data_yaml: task.data_yaml,
+        created_at: task.created_at,
+        started_at: task.started_at,
+        completed_at: task.completed_at,
+        error_message: task.error_message,
+      },
+      remote: task.remote || null,
+      latest_metric: latestMetric,
+      metrics,
+      artifacts: artifactsRes.items || [],
+      error_detail: trainingErrorDetail.value,
+    };
+    downloadJson(
+      report,
+      `training-report-${task.task_uuid || task.id}.json`,
+    );
+    ElMessage.success("训练报告已导出");
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || "预测失败");
+    ElMessage.error(e.response?.data?.detail || "导出训练报告失败");
   } finally {
-    predictLoading.value = false;
+    reportExporting.value = false;
   }
 }
 
