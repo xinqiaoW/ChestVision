@@ -5,14 +5,15 @@ from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.dashboard import router as dashboard_router
 from app.api.detection import router as detection_router
+from app.api.doctor_assignment import router as doctor_assignment_router
 from app.api.doctor_recommendation import router as doctor_recommendation_router
 from app.api.health import router as health_router
+from app.api.knowledge import router as knowledge_router  # Day11: 知识库管理 API
 from app.api.medical_record import router as medical_record_router
 from app.api.patient import router as patient_router
 from app.api.profile import router as profile_router
 from app.api.report import router as report_router
 from app.api.training import router as training_router  # 训练 API 路由
-from app.api.knowledge import router as knowledge_router  # Day11: 知识库管理 API
 from app.config.settings import settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logger import get_logger
@@ -24,7 +25,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-
 
 logger = get_logger(__name__)
 
@@ -72,6 +72,7 @@ def init_knowledge_base():
     """启动时预构建知识库索引"""
     try:
         from app.rag.retriever import knowledge_retriever
+
         knowledge_retriever.build_index()
         print("知识库索引初始化完成")
     except Exception as e:
@@ -126,6 +127,7 @@ app.include_router(remote_training_router)  # 注册生产远程训练 API 路�
 app.include_router(model_management_router)  # 注册模型管理 API 路由
 app.include_router(detection_router)  # 注册检测 API 路由
 app.include_router(doctor_recommendation_router)  # AI 医生推荐
+app.include_router(doctor_assignment_router)  # 医患分配请求
 app.include_router(chat_router)  # 注册对话 API 路由
 app.include_router(patient_router)  # 注册患者管理 API 路由
 app.include_router(medical_record_router)  # 注册病例管理 API 路由

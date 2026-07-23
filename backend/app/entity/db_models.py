@@ -524,11 +524,15 @@ class DatasetUpload(Base):
     expected_size = Column(BigInteger, nullable=True, comment="客户端声明大小")
     actual_size = Column(BigInteger, nullable=True, comment="OSS HeadObject 大小")
     etag = Column(String(128), nullable=True, comment="OSS 对象 ETag")
-    checksum_sha256 = Column(String(128), nullable=True, comment="客户端或后端计算的 SHA256")
+    checksum_sha256 = Column(
+        String(128), nullable=True, comment="客户端或后端计算的 SHA256"
+    )
     object_metadata = Column("metadata", JSON, nullable=True, comment="OSS metadata")
 
     client_progress = Column(Integer, default=0, comment="非可信上传进度")
-    client_completed_at = Column(DateTime, nullable=True, comment="客户端声明上传完成时间")
+    client_completed_at = Column(
+        DateTime, nullable=True, comment="客户端声明上传完成时间"
+    )
     server_verified_at = Column(
         DateTime,
         nullable=True,
@@ -652,12 +656,16 @@ class RemoteTrainingJob(Base):
     user_command = Column(Text, nullable=False, comment="容器内执行的训练命令")
     envs = Column(JSON, nullable=True, comment="注入训练容器的环境变量")
 
-    input_dataset_prefix = Column(String(500), nullable=False, comment="输入数据集 OSS 前缀")
+    input_dataset_prefix = Column(
+        String(500), nullable=False, comment="输入数据集 OSS 前缀"
+    )
     output_prefix = Column(String(500), nullable=False, comment="训练输出 OSS 前缀")
     results_csv_key = Column(String(500), nullable=True, comment="results.csv 对象 key")
     best_weight_key = Column(String(500), nullable=True, comment="best.pt 对象 key")
     success_key = Column(String(500), nullable=True, comment="_SUCCESS 对象 key")
-    callback_token_hash = Column(String(128), nullable=True, comment="回调 token SHA256")
+    callback_token_hash = Column(
+        String(128), nullable=True, comment="回调 token SHA256"
+    )
 
     submitted_at = Column(DateTime, nullable=True, comment="CreateJob 成功提交时间")
     last_synced_at = Column(DateTime, nullable=True, comment="最近一次轮询同步时间")
@@ -700,9 +708,7 @@ class ModelArtifactLocation(Base):
         index=True,
         comment="best_weight/results_csv/eval_report/metrics/success/default_cache",
     )
-    storage_backend = Column(
-        String(20), nullable=False, comment="oss/local/minio/http"
-    )
+    storage_backend = Column(String(20), nullable=False, comment="oss/local/minio/http")
     bucket = Column(String(128), nullable=True, comment="OSS/MinIO bucket")
     object_key = Column(String(500), nullable=True, comment="OSS/MinIO 对象 key")
     local_path = Column(String(500), nullable=True, comment="服务端本地缓存路径")
@@ -753,7 +759,9 @@ class ModelVersion(Base):
     )
 
     # 模型文件
-    model_path = Column(String(500), nullable=True, comment="本地模型文件路径或 OSS URI")
+    model_path = Column(
+        String(500), nullable=True, comment="本地模型文件路径或 OSS URI"
+    )
     minio_url = Column(String(500), nullable=True, comment="MinIO 存储 URL")
 
     # 评估指标（训练完成后写入）
@@ -1077,6 +1085,53 @@ class DoctorPatientRelation(Base):
     patient = relationship(
         "User", back_populates="assigned_doctors", foreign_keys=[patient_id]
     )
+
+
+class DoctorAssignmentRequest(Base):
+    """医患分配请求表 — 患者主动选择医生后，等待管理员审批"""
+
+    __tablename__ = "doctor_assignment_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+        comment="患者用户ID",
+    )
+    doctor_id = Column(
+        Integer,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+        comment="医生用户ID",
+    )
+    status = Column(
+        String(20),
+        default="pending",
+        comment="pending / approved / rejected",
+    )
+    request_source = Column(
+        String(30),
+        default="manual",
+        comment="来源：recommendation（AI推荐）/ manual（医生选择页）",
+    )
+    detection_task_id = Column(
+        Integer,
+        ForeignKey("detection_tasks.id"),
+        nullable=True,
+        comment="关联检测任务（推荐来源时）",
+    )
+    requested_by = Column(
+        Integer, ForeignKey("users.id"), nullable=False, comment="请求发起者"
+    )
+    reviewed_by = Column(
+        Integer, ForeignKey("users.id"), nullable=True, comment="审批管理员"
+    )
+    review_note = Column(String(500), nullable=True, comment="审批备注")
+    created_at = Column(DateTime, default=datetime.now, comment="请求时间")
+    reviewed_at = Column(DateTime, nullable=True, comment="审批时间")
 
 
 class MedicalRecord(Base):

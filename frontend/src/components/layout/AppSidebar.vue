@@ -61,6 +61,7 @@ import {
   DataAnalysis,
   Document,
   FolderOpened,
+  Plus,
   User,
 } from "@element-plus/icons-vue";
 import { computed, ref } from "vue";
@@ -89,6 +90,12 @@ const allMenuItems = [
     title: "检测工作台",
     icon: Camera,
     roles: ["admin"],
+  },
+  {
+    path: "/select-doctor",
+    title: "选择医生",
+    icon: Plus,
+    roles: ["patient"],
   },
   {
     path: "/patients",

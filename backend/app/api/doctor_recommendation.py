@@ -6,6 +6,7 @@ from app.api.auth import get_current_user
 from app.database.session import get_db
 from app.entity.db_models import (
     DetectionTask,
+    DoctorAssignmentRequest,
     DoctorPatientRelation,
     DoctorRecommendation,
     PatientProfile,
@@ -71,9 +72,7 @@ def _authorized_profile(
 ) -> PatientProfile | None:
     if profile_id is None:
         return (
-            db.query(PatientProfile)
-            .filter(PatientProfile.user_id == user.id)
-            .first()
+            db.query(PatientProfile).filter(PatientProfile.user_id == user.id).first()
             if user.user_type == "patient"
             else None
         )
@@ -359,7 +358,50 @@ async def select_recommendation(
         .first()
     )
     if confirmed:
-        raise HTTPException(status_code=409, detail="管理员已确认本次医生选择，不可更改")
+        raise HTTPException(
+            status_code=409, detail="管理员已确认本次医生选择，不可更改"
+        )
+
+    # 检查患者是否已有活跃医患关系或待审批请求
+    if current_user.user_type == "patient":
+        existing_relation = (
+            db.query(DoctorPatientRelation)
+            .filter(
+                DoctorPatientRelation.patient_id == current_user.id,
+                DoctorPatientRelation.relation_status == "active",
+            )
+            .first()
+        )
+        if existing_relation:
+            raise HTTPException(
+                status_code=409, detail="您已有绑定的医生，不可再次选择"
+            )
+
+        pending_request = (
+            db.query(DoctorAssignmentRequest)
+            .filter(
+                DoctorAssignmentRequest.patient_id == current_user.id,
+                DoctorAssignmentRequest.status == "pending",
+            )
+            .first()
+        )
+        if pending_request:
+            raise HTTPException(
+                status_code=409, detail="您已有一个待审批的医生分配请求"
+            )
+
+    # 创建分配请求（仅患者操作时）
+    if current_user.user_type == "patient":
+        assign_req = DoctorAssignmentRequest(
+            patient_id=current_user.id,
+            doctor_id=row.doctor_id,
+            status="pending",
+            request_source="recommendation",
+            detection_task_id=row.detection_task_id,
+            requested_by=current_user.id,
+        )
+        db.add(assign_req)
+
     db.query(DoctorRecommendation).filter(
         DoctorRecommendation.detection_task_id == row.detection_task_id,
         DoctorRecommendation.status == "selected",
@@ -372,5 +414,5 @@ async def select_recommendation(
         "id": row.id,
         "doctor_id": row.doctor_id,
         "status": row.status,
-        "message": "已记录您的选择，后续可由管理员确认医患关系",
+        "message": "已记录您的选择，等待管理员审批后即可绑定医患关系",
     }

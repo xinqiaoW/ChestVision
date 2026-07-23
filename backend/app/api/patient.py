@@ -144,18 +144,18 @@ async def get_patient(
     }
 
 
-# ── 分配医患关系 ──
+# ── 分配医患关系（已禁用直接分配，必须通过请求-审批流程）──
 @router.post("/relations", status_code=201)
 async def assign_patient(
     req: AssignPatientRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """管理员将病人分配给医生"""
+    """管理员分配医患关系（需通过请求-审批流程，此处自动创建请求并批准）"""
     if current_user.user_type != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可分配医患关系")
 
-    # 检查是否已存在
+    # 检查是否已存在活跃关系
     existing = (
         db.query(DoctorPatientRelation)
         .filter(
@@ -164,25 +164,63 @@ async def assign_patient(
         )
         .first()
     )
-    if existing:
-        if existing.relation_status == "active":
-            raise HTTPException(status_code=400, detail="该医患关系已存在")
-        else:
-            existing.relation_status = "active"
-            existing.notes = req.notes or existing.notes
-            db.commit()
-            return {"id": existing.id, "message": "医患关系已重新激活"}
+    if existing and existing.relation_status == "active":
+        raise HTTPException(status_code=400, detail="该医患关系已存在")
 
-    rel = DoctorPatientRelation(
-        doctor_id=req.doctor_id,
-        patient_id=req.patient_id,
-        notes=req.notes,
-        assigned_by=current_user.id,
+    # 通过请求-审批流程：创建请求并自动批准
+    from datetime import datetime
+
+    from app.entity.db_models import DoctorAssignmentRequest
+
+    # 检查是否已有待审批请求
+    pending_req = (
+        db.query(DoctorAssignmentRequest)
+        .filter(
+            DoctorAssignmentRequest.patient_id == req.patient_id,
+            DoctorAssignmentRequest.status == "pending",
+        )
+        .first()
     )
-    db.add(rel)
+    if pending_req:
+        # 有挂起请求，先驳回旧的
+        pending_req.status = "rejected"
+        pending_req.reviewed_by = current_user.id
+        pending_req.reviewed_at = datetime.now()
+        pending_req.review_note = "管理员手动重新分配"
+
+    # 创建请求并自动批准
+    assign_req = DoctorAssignmentRequest(
+        patient_id=req.patient_id,
+        doctor_id=req.doctor_id,
+        status="approved",
+        request_source="admin",
+        requested_by=current_user.id,
+        reviewed_by=current_user.id,
+        reviewed_at=datetime.now(),
+        review_note=req.notes or "管理员直接分配",
+    )
+    db.add(assign_req)
+    db.flush()
+
+    # 建立医患关系
+    if existing:
+        existing.relation_status = "active"
+        existing.notes = req.notes or existing.notes
+    else:
+        rel = DoctorPatientRelation(
+            doctor_id=req.doctor_id,
+            patient_id=req.patient_id,
+            notes=req.notes,
+            assigned_by=current_user.id,
+        )
+        db.add(rel)
+
     db.commit()
-    db.refresh(rel)
-    return {"id": rel.id, "message": "分配成功"}
+    return {
+        "id": assign_req.id,
+        "message": "已通过请求-审批流程建立医患关系",
+        "status": "approved",
+    }
 
 
 # ── 解除医患关系 ──
@@ -220,3 +258,41 @@ async def list_doctors(
         db.query(User).filter(User.user_type == "doctor", User.is_active == True).all()
     )
     return [{"id": d.id, "username": d.username, "email": d.email} for d in doctors]
+
+
+# ── 获取医生列表（含执业档案，供患者选择医生）──
+@router.get("/doctors/profiles")
+async def list_doctors_with_profiles(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取所有医生及其执业档案信息"""
+    from app.entity.db_models import DoctorProfile
+
+    doctors = (
+        db.query(User).filter(User.user_type == "doctor", User.is_active == True).all()
+    )
+    doctor_ids = [d.id for d in doctors]
+    profiles = {
+        p.user_id: p
+        for p in db.query(DoctorProfile)
+        .filter(DoctorProfile.user_id.in_(doctor_ids))
+        .all()
+    }
+    result = []
+    for d in doctors:
+        p = profiles.get(d.id)
+        result.append(
+            {
+                "id": d.id,
+                "username": d.username,
+                "email": d.email,
+                "display_name": p.display_name if p else d.username,
+                "specialty": p.specialty if p else None,
+                "department": p.department if p else None,
+                "title": p.title if p else None,
+                "hospital": p.hospital if p else None,
+                "introduction": p.introduction if p else None,
+            }
+        )
+    return result

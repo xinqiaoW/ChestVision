@@ -75,6 +75,12 @@ const routes = [
         meta: { title: "个人中心", icon: "User" },
       },
       {
+        path: "select-doctor",
+        name: "SelectDoctor",
+        component: () => import("@/views/DoctorSelectPage.vue"),
+        meta: { title: "选择医生", icon: "Plus" },
+      },
+      {
         path: "patients",
         name: "Patients",
         component: () => import("@/views/PatientManagePage.vue"),

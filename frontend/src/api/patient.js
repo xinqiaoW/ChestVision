@@ -15,6 +15,11 @@ export function getDoctors() {
   return request.get("/patients/doctors/list");
 }
 
+/** 医生列表（含执业档案信息） */
+export function getDoctorsWithProfileApi() {
+  return request.get("/patients/doctors/profiles");
+}
+
 /** 分配医患关系 */
 export function assignPatient(data) {
   return request.post("/patients/relations", data);

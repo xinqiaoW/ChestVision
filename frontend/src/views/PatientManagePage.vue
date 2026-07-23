@@ -118,17 +118,6 @@
             }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160" v-if="isAdmin" fixed="right">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              type="primary"
-              @click="showAssignDialog(row)"
-            >
-              分配医生
-            </el-button>
-          </template>
-        </el-table-column>
         <el-table-column label="操作" width="100" v-if="isDoctor" fixed="right">
           <template #default="{ row }">
             <el-button
@@ -150,51 +139,95 @@
       </p>
     </el-card>
 
-    <!-- 分配医生弹窗（仅管理员可见） -->
-    <el-dialog v-model="dialogVisible" title="分配医生" width="450px">
-      <p>
-        将
-        <b>{{ selectedPatient?.username || selectedPatient?.patient_code }}</b>
-        分配给：
-      </p>
-      <el-select
-        v-model="selectedDoctorId"
-        placeholder="选择医生"
-        style="width: 100%"
-      >
-        <el-option
-          v-for="doc in doctors"
-          :key="doc.id"
-          :label="doc.username"
-          :value="doc.id"
-        />
-      </el-select>
-      <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :disabled="!selectedDoctorId"
-          @click="handleAssign"
-        >
-          确认分配
-        </el-button>
+    <!-- 医生分配请求审核（管理员） -->
+    <el-card
+      v-if="isAdmin"
+      shadow="never"
+      class="review-card"
+      style="margin-top: 16px"
+    >
+      <template #header>
+        <div class="review-header">
+          <div>
+            <b>医生分配请求待审批</b>
+            <span>患者通过推荐或医生选择页发起的分配请求</span>
+          </div>
+          <el-badge
+            :value="pendingRequests.length"
+            :hidden="!pendingRequests.length"
+          >
+            <el-button size="small" @click="fetchPendingRequests"
+              >刷新</el-button
+            >
+          </el-badge>
+        </div>
       </template>
-    </el-dialog>
+      <el-table
+        v-if="pendingRequests.length"
+        :data="pendingRequests"
+        stripe
+        v-loading="reqLoading"
+      >
+        <el-table-column label="患者" min-width="120">
+          <template #default="{ row }">{{ row.patient_name }}</template>
+        </el-table-column>
+        <el-table-column label="申请医生" min-width="120">
+          <template #default="{ row }">{{ row.doctor_name }}</template>
+        </el-table-column>
+        <el-table-column label="来源" width="120">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="row.source === 'recommendation' ? 'success' : 'info'"
+            >
+              {{ row.source === "recommendation" ? "AI推荐" : "手动选择" }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="申请时间" min-width="160">
+          <template #default="{ row }">{{
+            formatTime(row.created_at)
+          }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="170" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              size="small"
+              type="success"
+              @click="handleApproveRequest(row)"
+              >同意</el-button
+            >
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              @click="handleRejectRequest(row)"
+              >驳回</el-button
+            >
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty
+        v-else-if="!reqLoading"
+        description="暂无待审批的医生分配请求"
+        :image-size="64"
+      />
+    </el-card>
   </div>
 </template>
 
 <script setup>
 import {
+  approveDoctorRequestApi,
+  getPendingDoctorRequestsApi,
+  rejectDoctorRequestApi,
+} from "@/api/doctorAssignment";
+import {
   confirmDoctorRecommendation,
   getPendingDoctorReviews,
   rejectDoctorRecommendation,
 } from "@/api/doctorRecommendation";
-import {
-  assignPatient,
-  getDoctors,
-  getPatients,
-  removeRelation,
-} from "@/api/patient";
+import { getPatients, removeRelation } from "@/api/patient";
 import { useUserStore } from "@/stores/user";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, ref } from "vue";
@@ -205,12 +238,10 @@ const isDoctor = computed(() => userStore.userType === "doctor");
 
 const loading = ref(false);
 const patients = ref([]);
-const doctors = ref([]);
-const dialogVisible = ref(false);
-const selectedPatient = ref(null);
-const selectedDoctorId = ref(null);
 const pendingReviews = ref([]);
 const reviewLoading = ref(false);
+const pendingRequests = ref([]);
+const reqLoading = ref(false);
 
 const lesionNameMap = {
   Atelectasis: "肺不张",
@@ -282,35 +313,6 @@ async function fetchPatients() {
   }
 }
 
-async function fetchDoctors() {
-  if (!isAdmin.value) return;
-  try {
-    doctors.value = await getDoctors();
-  } catch {
-    /* ignore */
-  }
-}
-
-function showAssignDialog(patient) {
-  selectedPatient.value = patient;
-  selectedDoctorId.value = null;
-  dialogVisible.value = true;
-}
-
-async function handleAssign() {
-  try {
-    await assignPatient({
-      doctor_id: selectedDoctorId.value,
-      patient_id: selectedPatient.value.user_id,
-    });
-    ElMessage.success("分配成功");
-    dialogVisible.value = false;
-    fetchPatients();
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || "分配失败");
-  }
-}
-
 async function handleRemoveRelation(relationId, patient) {
   try {
     await ElMessageBox.confirm(
@@ -326,10 +328,51 @@ async function handleRemoveRelation(relationId, patient) {
   }
 }
 
+async function fetchPendingRequests() {
+  if (!isAdmin.value) return;
+  reqLoading.value = true;
+  try {
+    const result = await getPendingDoctorRequestsApi();
+    pendingRequests.value = result.items || [];
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "加载请求失败");
+  } finally {
+    reqLoading.value = false;
+  }
+}
+
+async function handleApproveRequest(row) {
+  try {
+    await approveDoctorRequestApi(row.id);
+    ElMessage.success("已批准并建立医患关系");
+    fetchPendingRequests();
+    fetchPatients();
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || "审批失败");
+  }
+}
+
+async function handleRejectRequest(row) {
+  try {
+    await ElMessageBox.prompt("请输入驳回原因（可选）", "驳回请求", {
+      confirmButtonText: "确认驳回",
+      cancelButtonText: "取消",
+      inputType: "textarea",
+      inputPlaceholder: "可不填",
+    }).then(async ({ value }) => {
+      await rejectDoctorRequestApi(row.id, value || "");
+      ElMessage.success("已驳回");
+      fetchPendingRequests();
+    });
+  } catch {
+    /* cancelled */
+  }
+}
+
 onMounted(() => {
   fetchPatients();
-  fetchDoctors();
   fetchPendingReviews();
+  fetchPendingRequests();
 });
 </script>
 
