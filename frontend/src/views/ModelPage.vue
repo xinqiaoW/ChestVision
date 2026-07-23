@@ -169,7 +169,12 @@
             >
               <el-icon><Download /></el-icon>下载权重
             </el-button>
-            <el-button size="small" text type="primary" @click="openConfig(row)">
+            <el-button
+              class="config-action-button"
+              size="small"
+              text
+              @click="openConfig(row)"
+            >
               <el-icon><Setting /></el-icon>配置
             </el-button>
             <el-button size="small" text type="danger" @click="confirmDelete(row)">
@@ -1035,6 +1040,20 @@ onMounted(refreshAll);
   background: #fef0f0;
   border-color: #f56c6c;
   color: #f56c6c;
+}
+
+.config-action-button.el-button.is-text,
+.config-action-button.el-button.is-text:not(.is-disabled):hover,
+.config-action-button.el-button.is-text:not(.is-disabled):focus,
+.config-action-button.el-button.is-text:not(.is-disabled):active {
+  --el-button-active-bg-color: transparent;
+  --el-button-hover-bg-color: transparent;
+  --el-button-hover-border-color: transparent;
+  background: transparent;
+  background-color: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--el-color-primary);
 }
 
 .config-body {

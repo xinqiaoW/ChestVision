@@ -4,6 +4,7 @@
 接口列表：
   - POST   /api/training/start              启动训练任务
   - GET    /api/training/tasks               获取训练任务列表
+  - DELETE /api/training/tasks/{task_id}     删除训练记录及其训练产物
   - GET    /api/training/status/{task_id}    获取训练状态（含最新指标）
   - GET    /api/training/metrics/{task_id}   获取训练指标历史
   - POST   /api/training/stop/{task_id}      停止训练任务
@@ -33,13 +34,20 @@ from app.entity.schemas import (
     TrainingTaskCreate,
 )
 from app.training.training_service import training_service
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/training", tags=["模型训练"])
+
+
+def _can_manage_all_training_tasks(user) -> bool:
+    return bool(
+        getattr(user, "is_superuser", False)
+        or getattr(user, "user_type", "") == "admin"
+    )
 
 
 def _load_dataset_class_metadata(data_yaml: str) -> tuple[list[str], dict[str, str]]:
@@ -193,6 +201,32 @@ async def list_training_tasks(
 ):
     tasks = training_service.get_task_list(db, user_id=current_user.id)
     return {"total": len(tasks), "items": tasks}
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_training_task(
+    task_id: int,
+    cascade_models: bool = Query(
+        False,
+        description="训练记录关联模型时必须显式确认同步删除模型",
+    ),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    result = training_service.delete_training_task(
+        db=db,
+        task_id=task_id,
+        user_id=current_user.id,
+        include_all=_can_manage_all_training_tasks(current_user),
+        cascade_models=cascade_models,
+    )
+    if "error" in result:
+        raise HTTPException(
+            status_code=result.get("status_code", 400),
+            detail=result["error"],
+        )
+    logger.info("用户 %s 删除训练记录: task_id=%d", current_user.username, task_id)
+    return result
 
 
 @router.get("/status/{task_id}")

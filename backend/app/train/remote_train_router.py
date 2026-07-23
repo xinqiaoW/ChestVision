@@ -18,7 +18,7 @@ from app.train.remote_train_schemas import (
     RemoteTrainingStartRequest,
 )
 from app.train.remote_train_service import remote_training_service
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 
@@ -294,6 +294,46 @@ async def handle_remote_training_error_callback(
         )
     except Exception as exc:
         raise _handle_error(exc, "handle_remote_training_error_callback")
+
+
+@router.get("/logs/{task_id}", summary="查询训练运行日志")
+async def get_remote_training_run_log(
+    task_id: int,
+    start_line: int = Query(1, ge=1, description="从真实日志行号开始读取"),
+    limit: int = Query(1000, ge=1, le=5000, description="最多返回日志行数"),
+    tail: bool = Query(False, description="为 true 时返回最新 limit 行"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    try:
+        return remote_training_service.get_training_run_log(
+            db=db,
+            task_id=task_id,
+            user_id=current_user.id,
+            start_line=start_line,
+            limit=limit,
+            tail=tail,
+        )
+    except Exception as exc:
+        raise _handle_error(exc, "get_remote_training_run_log")
+
+
+@router.get("/logs/{task_id}/download-url", summary="签发训练运行日志下载 URL")
+async def get_remote_training_run_log_download_url(
+    task_id: int,
+    expires_seconds: int = Query(600, ge=60, le=3600, description="下载 URL 有效期"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    try:
+        return remote_training_service.get_training_run_log_download_url(
+            db=db,
+            task_id=task_id,
+            user_id=current_user.id,
+            expires_seconds=expires_seconds,
+        )
+    except Exception as exc:
+        raise _handle_error(exc, "get_remote_training_run_log_download_url")
 
 
 @router.get("/artifacts/{task_id}", summary="查询训练产物存储位置")

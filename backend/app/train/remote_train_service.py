@@ -10,6 +10,7 @@ from app.train.remote_train_dlc import PaiDlcGateway
 from app.train.remote_train_error_service import RemoteTrainingErrorMixin
 from app.train.remote_train_errors import RemoteTrainingValidationError
 from app.train.remote_train_job_service import RemoteTrainingJobServiceMixin
+from app.train.remote_train_log_service import RemoteTrainingLogMixin
 from app.train.remote_train_metrics_service import RemoteTrainingMetricsMixin
 from app.train.remote_train_serializers import RemoteTrainingSerializerMixin
 from app.train.remote_train_storage import OssStorageGateway
@@ -29,6 +30,7 @@ class RemoteTrainingService(
     RemoteTrainingCommandMixin,
     RemoteTrainingArtifactMixin,
     RemoteTrainingMetricsMixin,
+    RemoteTrainingLogMixin,
     RemoteTrainingErrorMixin,
     RemoteTrainingValidationMixin,
     RemoteTrainingSerializerMixin,

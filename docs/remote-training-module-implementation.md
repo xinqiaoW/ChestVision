@@ -88,6 +88,14 @@ Web 后端只做：
 - 同步 `training_metrics`
 - 登记 `model_artifact_locations`
 
+PAI-DLC 任务启动时使用三个 OSS DataSource：
+
+- 数据集输入前缀，挂载到 `PAI_DATASET_MOUNT_PATH`。
+- 训练输出前缀，挂载到 `PAI_OUTPUT_MOUNT_PATH`。
+- 基础模型前缀，挂载到 `PAI_BASE_MODEL_MOUNT_PATH`。
+
+基础模型前缀默认为 `base_model`，用于存放固定模型选项对应的权重文件，例如 `yolo11n.pt`、`yolo11s.pt`。训练脚本根据用户选择的模型名拼出 `/mnt/base_model/{model}.pt`，不会再让 Ultralytics 在容器内联网下载基础权重。
+
 数据集格式校验、ZIP 安全解压和训练都由 PAI-DLC 训练任务执行。后端不再单独编排上传后的数据集格式验证或预处理任务。
 
 ## 3. 数据生命周期
@@ -434,6 +442,7 @@ OSS_BUCKET
 PAI_DLC_OSS_ENDPOINT
 PAI_DLC_OSS_URI_HOST
 REMOTE_TRAIN_OSS_PREFIX
+REMOTE_TRAIN_BASE_MODEL_PREFIX
 OSS_UPLOAD_URL_EXPIRES_SECONDS
 REMOTE_TRAINING_CALLBACK_SECRET
 REMOTE_TRAINING_METRICS_CALLBACK_URL
@@ -489,6 +498,21 @@ PAI_POD_COUNT
 PAI_JOB_MAX_RUNNING_MINUTES
 PAI_DATASET_MOUNT_PATH
 PAI_OUTPUT_MOUNT_PATH
+PAI_BASE_MODEL_MOUNT_PATH
+```
+
+默认基础模型位置：
+
+```text
+oss://{OSS_BUCKET}/base_model/
+/mnt/base_model/yolo11n.pt
+```
+
+如果使用自定义前缀或挂载目录，分别设置：
+
+```text
+REMOTE_TRAIN_BASE_MODEL_PREFIX=base_model
+PAI_BASE_MODEL_MOUNT_PATH=/mnt/base_model
 ```
 
 `PAI_IMAGE_URI` 必须是完整镜像地址，例如：

@@ -35,6 +35,7 @@ class RemoteTrainingCommandMixin:
             "RAW_OBJECT_KEY": upload.raw_object_key,
             "RAW_DATASET_FILENAME": upload.raw_object_key.rsplit("/", 1)[-1],
             "OUTPUT_PREFIX": output_prefix,
+            "BASE_MODEL_PREFIX": self.settings.base_model_prefix,
             "OSS_BUCKET": self.settings.oss_bucket,
             "CALLBACK_TOKEN": callback_token,
             "METRICS_CALLBACK_URL": self.settings.remote_metrics_callback_url,
@@ -56,11 +57,39 @@ class RemoteTrainingCommandMixin:
         """
         dataset = self.settings.pai_dataset_mount_path.rstrip("/")
         output = self.settings.pai_output_mount_path.rstrip("/")
+        base_model_mount = self.settings.pai_base_model_mount_path.rstrip("/")
         model = task.model_name
         if not model.endswith(".pt"):
             model = model + ".pt"
         optimizer = task.optimizer or "SGD"
         lr0 = task.lr0 if task.lr0 is not None else 0.01
+        run_log_tee_setup = (
+            f"run_log_path = os.path.join(output_dir, 'run.log')\n"
+            f"os.makedirs(output_dir, exist_ok=True)\n"
+            f"class _RunLogTee:\n"
+            f"    encoding = 'utf-8'\n"
+            f"    def __init__(self, *streams):\n"
+            f"        self.streams = streams\n"
+            f"    def write(self, data):\n"
+            f"        for stream in self.streams:\n"
+            f"            try:\n"
+            f"                stream.write(data)\n"
+            f"            except Exception:\n"
+            f"                pass\n"
+            f"        return len(data)\n"
+            f"    def flush(self):\n"
+            f"        for stream in self.streams:\n"
+            f"            try:\n"
+            f"                stream.flush()\n"
+            f"            except Exception:\n"
+            f"                pass\n"
+            f"    def isatty(self):\n"
+            f"        return False\n"
+            f"_run_log_file = open(run_log_path, 'a', encoding='utf-8', buffering=1)\n"
+            f"sys.stdout = _RunLogTee(sys.__stdout__, _run_log_file)\n"
+            f"sys.stderr = _RunLogTee(sys.__stderr__, _run_log_file)\n"
+            f"print('[system] run log attached: ' + run_log_path, flush=True)\n"
+        )
         return (
             "set -e; "
             f"mkdir -p {output}/weights {output}/dataset; "
@@ -69,6 +98,7 @@ class RemoteTrainingCommandMixin:
             f"mount_dir = {dataset!r}\n"
             f"output_dir = {output!r}\n"
             f"work_dir = '/tmp/remote_train_dataset'\n"
+            f"{run_log_tee_setup}"
             f"def write_error(stage, exc, extra=None):\n"
             f"    payload = {{\n"
             f"        'ok': False,\n"
@@ -146,7 +176,7 @@ class RemoteTrainingCommandMixin:
             f"                matches.append(os.path.join(current, name))\n"
             f"    return sorted(matches, key=lambda path: (len(path), path))\n"
             f"try:\n"
-            f"    env_summary = {{key: os.environ.get(key) for key in ['TASK_ID', 'TASK_UUID', 'DATASET_ID', 'DATASET_PREFIX', 'RAW_OBJECT_KEY', 'RAW_DATASET_FILENAME', 'OUTPUT_PREFIX', 'MODEL_NAME', 'EPOCHS', 'IMG_SIZE', 'BATCH_SIZE']}}\n"
+            f"    env_summary = {{key: os.environ.get(key) for key in ['TASK_ID', 'TASK_UUID', 'DATASET_ID', 'DATASET_PREFIX', 'RAW_OBJECT_KEY', 'RAW_DATASET_FILENAME', 'OUTPUT_PREFIX', 'BASE_MODEL_PREFIX', 'MODEL_NAME', 'EPOCHS', 'IMG_SIZE', 'BATCH_SIZE']}}\n"
             f"    print('remote train env: ' + json.dumps(env_summary, ensure_ascii=False), flush=True)\n"
             f"    print('dataset mount dir: ' + mount_dir, flush=True)\n"
             f"    print('dataset mount exists: ' + str(os.path.exists(mount_dir)), flush=True)\n"
@@ -203,12 +233,15 @@ class RemoteTrainingCommandMixin:
             f"import json, os, platform, sys, traceback, urllib.request\n"
             f"data_yaml = open('/tmp/remote_data_yaml_path', encoding='utf-8').read().strip()\n"
             f"output_dir = {output!r}\n"
-            f"model_name = {model!r}\n"
+            f"base_model_mount = {base_model_mount!r}\n"
+            f"base_model_filename = {model!r}\n"
+            f"model_name = os.path.join(base_model_mount, base_model_filename)\n"
             f"epochs = {int(task.epochs)}\n"
             f"img_size = {int(task.img_size)}\n"
             f"batch_size = {int(task.batch_size)}\n"
             f"optimizer = {optimizer!r}\n"
             f"lr0 = {float(lr0)!r}\n"
+            f"{run_log_tee_setup}"
             f"def write_error(stage, exc):\n"
             f"    payload = {{\n"
             f"        'ok': False,\n"
@@ -218,7 +251,8 @@ class RemoteTrainingCommandMixin:
             f"        'task_uuid': os.environ.get('TASK_UUID'),\n"
             f"        'dataset_id': os.environ.get('DATASET_ID'),\n"
             f"        'data_yaml': data_yaml,\n"
-            f"        'model_name': model_name,\n"
+            f"        'model_name': base_model_filename,\n"
+            f"        'base_model_path': model_name,\n"
             f"        'epochs': epochs,\n"
             f"        'img_size': img_size,\n"
             f"        'batch_size': batch_size,\n"
@@ -313,7 +347,12 @@ class RemoteTrainingCommandMixin:
             f"        'lr': get_lr(trainer),\n"
             f"    }})\n"
             f"try:\n"
-            f"    print('training config: ' + json.dumps({{'data_yaml': data_yaml, 'model_name': model_name, 'epochs': epochs, 'img_size': img_size, 'batch_size': batch_size, 'optimizer': optimizer, 'lr0': lr0}}, ensure_ascii=False), flush=True)\n"
+            f"    print('base model mount dir: ' + base_model_mount, flush=True)\n"
+            f"    print('base model mount exists: ' + str(os.path.exists(base_model_mount)), flush=True)\n"
+            f"    print('base model path: ' + model_name, flush=True)\n"
+            f"    if not os.path.exists(model_name):\n"
+            f"        raise FileNotFoundError('基础模型不存在，请先上传到 OSS base_model 目录: ' + model_name)\n"
+            f"    print('training config: ' + json.dumps({{'data_yaml': data_yaml, 'model_name': base_model_filename, 'base_model_path': model_name, 'epochs': epochs, 'img_size': img_size, 'batch_size': batch_size, 'optimizer': optimizer, 'lr0': lr0}}, ensure_ascii=False), flush=True)\n"
             f"    from ultralytics import YOLO\n"
             f"    model = YOLO(model_name)\n"
             f"    model.add_callback('on_train_epoch_end', on_train_epoch_end)\n"
@@ -323,8 +362,9 @@ class RemoteTrainingCommandMixin:
             f"    raise\n"
             f"PY\n"
             f"python - <<'PY'\n"
-            f"import json, os, shutil, time, traceback, urllib.request\n"
+            f"import json, os, shutil, sys, time, traceback, urllib.request\n"
             f"output_dir = {output!r}\n"
+            f"{run_log_tee_setup}"
             f"def list_tree(root, max_entries=80, max_depth=3):\n"
             f"    entries = []\n"
             f"    if not os.path.exists(root):\n"
@@ -435,6 +475,15 @@ class RemoteTrainingCommandMixin:
                     self.settings.pai_oss_uri_host,
                 ),
                 "MountPath": self.settings.pai_output_mount_path,
+            },
+            {
+                "Uri": _dlc_oss_uri(
+                    self.settings.oss_bucket,
+                    self.settings.pai_oss_endpoint,
+                    self.settings.base_model_prefix,
+                    self.settings.pai_oss_uri_host,
+                ),
+                "MountPath": self.settings.pai_base_model_mount_path,
             },
         ]
 

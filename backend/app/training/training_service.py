@@ -20,7 +20,14 @@ from datetime import datetime
 from app.config.settings import settings
 from app.core.logger import get_logger
 from app.database.session import SessionLocal
-from app.entity.db_models import TrainingMetric, TrainingTask
+from app.entity.db_models import (
+    DetectionTask,
+    ModelArtifactLocation,
+    ModelUpload,
+    ModelVersion,
+    TrainingMetric,
+    TrainingTask,
+)
 
 logger = get_logger(__name__)
 
@@ -364,6 +371,144 @@ class TrainingService:
             }
             for t in tasks
         ]
+
+    @staticmethod
+    def delete_training_task(
+        db,
+        task_id: int,
+        user_id: int,
+        include_all: bool = False,
+        cascade_models: bool = False,
+    ) -> dict:
+        task = db.query(TrainingTask).filter(TrainingTask.id == task_id).first()
+        if not task:
+            return {"error": "训练任务不存在", "status_code": 404}
+        if not include_all and task.user_id != user_id:
+            return {"error": "无权删除该训练任务", "status_code": 403}
+
+        status = str(task.status or "").lower()
+        with _running_lock:
+            is_running = task.task_uuid in _running_tasks
+        if is_running or status in {"pending", "running"}:
+            return {"error": "训练任务仍在运行或等待中，请先取消训练", "status_code": 409}
+
+        models = (
+            db.query(ModelVersion)
+            .filter(ModelVersion.training_task_id == task.id)
+            .all()
+        )
+        if models and not cascade_models:
+            return {
+                "error": "删除训练记录会同时删除训练产出的模型，请确认 cascade_models=true",
+                "status_code": 409,
+            }
+
+        default_models = [model for model in models if model.is_default]
+        if default_models:
+            return {
+                "error": "该训练记录关联当前默认推理模型，请先在模型管理中切换默认模型",
+                "status_code": 409,
+            }
+
+        model_ids = [model.id for model in models]
+        artifact_rows = list(task.artifact_locations)
+        if model_ids:
+            artifact_rows.extend(
+                db.query(ModelArtifactLocation)
+                .filter(ModelArtifactLocation.model_version_id.in_(model_ids))
+                .all()
+            )
+        oss_keys = {
+            row.object_key
+            for row in artifact_rows
+            if row.storage_backend == "oss" and row.object_key
+        }
+        local_paths = {
+            row.local_path
+            for row in artifact_rows
+            if row.storage_backend == "local" and row.local_path
+        }
+        local_paths.update(
+            model.model_path
+            for model in models
+            if TrainingService._is_local_artifact_path(model.model_path)
+        )
+
+        remote_job = task.remote_training_job
+        deleted_oss_keys: list[str] = []
+        if oss_keys or remote_job:
+            from app.model_management.service import model_management_service
+
+            try:
+                deleted_oss_keys = model_management_service._delete_oss_artifacts(
+                    oss_keys,
+                    remote_job,
+                )
+            except Exception:
+                db.rollback()
+                return {"error": "删除训练产物 OSS 对象失败", "status_code": 500}
+
+        if model_ids:
+            db.query(DetectionTask).filter(
+                DetectionTask.model_version_id.in_(model_ids)
+            ).update({"model_version_id": None}, synchronize_session=False)
+            db.query(ModelUpload).filter(
+                ModelUpload.model_version_id.in_(model_ids)
+            ).update(
+                {
+                    "model_version_id": None,
+                    "status": "CANCELLED",
+                    "updated_at": datetime.now(),
+                },
+                synchronize_session=False,
+            )
+            for model in models:
+                db.delete(model)
+
+        local_output_dir = os.path.join(
+            os.getcwd(),
+            settings.TRAIN_OUTPUT_DIR,
+            f"task_{task.task_uuid}",
+        )
+        db.delete(task)
+        db.commit()
+
+        deleted_local_paths = TrainingService._delete_training_local_artifacts(
+            local_paths,
+            local_output_dir,
+        )
+        return {
+            "message": "训练记录已删除",
+            "deleted_training_task_id": task_id,
+            "deleted_model_version_ids": model_ids,
+            "deleted_oss_keys": deleted_oss_keys,
+            "deleted_local_paths": deleted_local_paths,
+        }
+
+    @staticmethod
+    def _delete_training_local_artifacts(paths: set[str], output_dir: str) -> list[str]:
+        deleted: list[str] = []
+        try:
+            from app.model_management.service import model_management_service
+
+            deleted.extend(model_management_service._delete_local_artifacts(paths))
+        except Exception as exc:
+            logger.warning("删除训练关联本地模型文件失败: %s", exc, exc_info=True)
+
+        if output_dir and os.path.isdir(output_dir):
+            try:
+                shutil.rmtree(output_dir)
+                deleted.append(output_dir)
+            except Exception as exc:
+                logger.warning("删除训练输出目录失败: path=%s error=%s", output_dir, exc)
+        return deleted
+
+    @staticmethod
+    def _is_local_artifact_path(value: str | None) -> bool:
+        if not value:
+            return False
+        text = str(value)
+        return not text.startswith(("oss://", "http://", "https://", "minio://"))
 
     @staticmethod
     def parse_results_csv(results_csv_path: str) -> list:

@@ -86,6 +86,7 @@ class RemoteTrainingSerializerMixin:
                 "ecs_spec": remote_job.ecs_spec,
                 "input_dataset_prefix": remote_job.input_dataset_prefix,
                 "output_prefix": remote_job.output_prefix,
+                "run_log_key": self._run_log_key(remote_job),
                 "results_csv_key": remote_job.results_csv_key,
                 "best_weight_key": remote_job.best_weight_key,
                 "success_key": remote_job.success_key,

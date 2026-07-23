@@ -133,6 +133,8 @@ class RemoteTrainSettings:
     pai_oss_uri_host: str
     # 远程训练对象前缀，用于隔离本功能产生的 raw dataset、processed dataset 和 training output。
     oss_prefix: str
+    # 基础模型 OSS 前缀。PAI-DLC 会单独挂载该目录，避免训练时在线下载 yolo11n.pt 等基础权重。
+    base_model_prefix: str
     # 浏览器直传 URL 有效期。URL 泄露后在过期前可上传到指定 object key，因此不应设置过长。
     upload_url_expires_seconds: int
     # OSS/EventBridge/FC 调用后端内部接口时使用的机器密钥，不下发给浏览器。
@@ -160,6 +162,7 @@ class RemoteTrainSettings:
     # PAI-DLC DataSources 挂载目录。训练命令只访问挂载路径，不直接处理 OSS SDK 细节。
     pai_dataset_mount_path: str
     pai_output_mount_path: str
+    pai_base_model_mount_path: str
     # ACR 镜像认证配置。公开镜像可留空；VPC endpoint 认证失败时需要填写。
     pai_acr_registry: str
     pai_acr_username: str
@@ -193,6 +196,7 @@ class RemoteTrainSettings:
             ),
             pai_oss_uri_host=_env("PAI_DLC_OSS_URI_HOST"),
             oss_prefix=_env("REMOTE_TRAIN_OSS_PREFIX", "remote-training"),
+            base_model_prefix=_env("REMOTE_TRAIN_BASE_MODEL_PREFIX", "base_model"),
             upload_url_expires_seconds=_env_int("OSS_UPLOAD_URL_EXPIRES_SECONDS", 900),
             remote_callback_secret=_env("REMOTE_TRAINING_CALLBACK_SECRET"),
             remote_metrics_callback_url=metrics_callback_url,
@@ -220,6 +224,10 @@ class RemoteTrainSettings:
             pai_job_max_running_minutes=_env_int("PAI_JOB_MAX_RUNNING_MINUTES", 180),
             pai_dataset_mount_path=_env("PAI_DATASET_MOUNT_PATH", "/mnt/dataset"),
             pai_output_mount_path=_env("PAI_OUTPUT_MOUNT_PATH", "/mnt/output"),
+            pai_base_model_mount_path=_env(
+                "PAI_BASE_MODEL_MOUNT_PATH",
+                "/mnt/base_model",
+            ),
             pai_acr_registry=_env("ACR_DOCKER_REGISTRY", registry_from_image),
             pai_acr_username=_env("ACR_USERNAME"),
             pai_acr_password=_env("ACR_PASSWORD"),

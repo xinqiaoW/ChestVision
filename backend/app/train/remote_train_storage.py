@@ -208,4 +208,4 @@ class OssStorageGateway:
 
     def get_text(self, key: str) -> str:
         result = self.bucket.get_object(key)
-        return result.read().decode("utf-8")
+        return result.read().decode("utf-8", errors="replace")

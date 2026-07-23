@@ -55,7 +55,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="170" />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button
               class="monitor-action-button"
@@ -72,6 +72,15 @@
               @click="stopTask(row)"
               >取消</el-button
             >
+            <el-button
+              v-if="canDeleteTask(row)"
+              size="small"
+              type="danger"
+              text
+              @click="deleteTask(row)"
+            >
+              <el-icon><Delete /></el-icon>删除
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -113,8 +122,9 @@
             <el-button
               size="small"
               :icon="Refresh"
+              :disabled="!canManuallyRefreshMonitor"
               :loading="monitorRefreshing"
-              @click="refreshMonitor"
+              @click="refreshMonitor({ manual: true })"
             >
               {{ monitorRefreshLabel }}
             </el-button>
@@ -140,21 +150,49 @@
             ></el-col>
           </el-row>
         </el-tab-pane>
-        <el-tab-pane v-if="hasTrainingError" label="训练日志" name="error">
-          <div class="training-error-panel">
-            <div class="training-error-toolbar">
+        <el-tab-pane label="运行日志" name="logs">
+          <div class="training-log-panel">
+            <div class="training-log-toolbar">
               <el-alert
+                v-if="hasTrainingError"
                 :title="trainingErrorSummary"
                 type="error"
                 show-icon
                 :closable="false"
               />
-              <el-button :icon="Download" @click="downloadTrainingError">
-                下载训练日志
+              <div v-else class="training-log-meta">
+                {{ runLogStatusText }}
+              </div>
+              <el-button
+                :icon="Download"
+                :disabled="!runLogMeta.exists"
+                @click="downloadRunLog"
+              >
+                下载运行日志
               </el-button>
             </div>
-            <el-scrollbar height="360px" class="training-error-scrollbar">
-              <pre class="training-error-text">{{ trainingErrorText }}</pre>
+            <el-scrollbar
+              v-loading="runLogLoading"
+              height="360px"
+              class="training-log-scrollbar"
+            >
+              <div v-if="runLogLines.length" class="training-log-lines">
+                <div
+                  v-for="line in runLogLines"
+                  :key="line.line_number"
+                  class="training-log-line"
+                >
+                  <span class="training-log-line-number">{{
+                    line.line_number
+                  }}</span>
+                  <span class="training-log-line-content">{{
+                    line.content || " "
+                  }}</span>
+                </div>
+              </div>
+              <div v-else class="training-log-empty">
+                {{ runLogStatusText }}
+              </div>
             </el-scrollbar>
           </div>
         </el-tab-pane>
@@ -290,7 +328,7 @@
 
 <script setup>
 import request from "@/utils/request";
-import { Download, Plus, Refresh, Upload } from "@element-plus/icons-vue";
+import { Delete, Download, Plus, Refresh, Upload } from "@element-plus/icons-vue";
 import * as echarts from "echarts";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -303,6 +341,9 @@ const loadingTasks = ref(false);
 const selectedTask = ref(null);
 const monitorRefreshing = ref(false);
 const reportExporting = ref(false);
+const runLogLoading = ref(false);
+const runLogLines = ref([]);
+const runLogMeta = ref(createEmptyRunLogMeta());
 const lastMonitorRefreshAt = ref(null);
 const refreshClockNow = ref(Date.now());
 const monitorActiveTab = ref("metrics");
@@ -314,7 +355,10 @@ let lossChart = null,
   mapChart = null;
 let pollTimer = null;
 let refreshClockTimer = null;
-const MONITOR_POLL_INTERVAL_MS = 5000;
+const MONITOR_AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const MONITOR_MANUAL_REFRESH_COOLDOWN_MS = 20 * 1000;
+const MONITOR_POLL_TICK_MS = 1000;
+const RUN_LOG_FETCH_LIMIT = 2000;
 const TERMINAL_TRAINING_STATUSES = [
   "completed",
   "succeeded",
@@ -397,9 +441,33 @@ const metricCards = computed(() => {
 });
 
 const monitorRefreshLabel = computed(() => {
+  if (monitorRefreshing.value) return "刷新中";
   if (!lastMonitorRefreshAt.value) return "刷新";
-  return `刷新 · ${formatRefreshAge(lastMonitorRefreshAt.value, refreshClockNow.value)}前`;
+  if (monitorAutoRefreshRemainingMs.value <= 0) return "刷新 · 即将刷新";
+  return `刷新 · ${formatRefreshCountdown(monitorAutoRefreshRemainingMs.value)}后`;
 });
+
+const monitorRefreshElapsedMs = computed(() => {
+  if (!lastMonitorRefreshAt.value) return Number.POSITIVE_INFINITY;
+  return Math.max(refreshClockNow.value - lastMonitorRefreshAt.value, 0);
+});
+
+const monitorAutoRefreshRemainingMs = computed(() => {
+  if (!lastMonitorRefreshAt.value) return 0;
+  return Math.max(MONITOR_AUTO_REFRESH_INTERVAL_MS - monitorRefreshElapsedMs.value, 0);
+});
+
+const monitorManualCooldownRemainingMs = computed(() => {
+  if (!lastMonitorRefreshAt.value) return 0;
+  return Math.max(
+    MONITOR_MANUAL_REFRESH_COOLDOWN_MS - monitorRefreshElapsedMs.value,
+    0,
+  );
+});
+
+const canManuallyRefreshMonitor = computed(
+  () => !monitorRefreshing.value && monitorManualCooldownRemainingMs.value <= 0,
+);
 
 const trainingErrorDetail = computed(() => {
   const task = selectedTask.value;
@@ -426,11 +494,19 @@ const trainingErrorSummary = computed(() => {
   return `${stage} · ${errorType}: ${error}`;
 });
 
-const trainingErrorText = computed(() => {
-  const detail = trainingErrorDetail.value || {
-    error: selectedTask.value?.error_message || "训练失败",
-  };
-  return JSON.stringify(detail, null, 2);
+const runLogStatusText = computed(() => {
+  if (!selectedTask.value) return "请选择训练任务";
+  if (!isRemoteTask(selectedTask.value)) return "当前任务不是远程训练任务";
+  if (runLogLoading.value) return "正在读取运行日志";
+  if (!runLogMeta.value.exists) return "运行日志尚未生成";
+  const total = runLogMeta.value.total_lines || 0;
+  if (!total) return "运行日志为空";
+  const rangeStart = runLogMeta.value.start_line || 1;
+  const rangeEnd = Math.max((runLogMeta.value.next_line || 1) - 1, rangeStart);
+  if (runLogMeta.value.truncated_head || runLogMeta.value.truncated_tail) {
+    return `显示第 ${rangeStart}-${rangeEnd} 行，共 ${total} 行`;
+  }
+  return `共 ${total} 行`;
 });
 
 function statusType(s) {
@@ -485,14 +561,69 @@ function errorStageText(stage) {
   return map[stage] || stage;
 }
 
-function downloadTrainingError() {
+function createEmptyRunLogMeta() {
+  return {
+    exists: false,
+    total_lines: 0,
+    start_line: 1,
+    next_line: 1,
+    log_key: "",
+    truncated_head: false,
+    truncated_tail: false,
+  };
+}
+
+function resetRunLog() {
+  runLogLines.value = [];
+  runLogMeta.value = createEmptyRunLogMeta();
+}
+
+async function fetchRunLog() {
+  if (!selectedTask.value || !isRemoteTask(selectedTask.value)) {
+    resetRunLog();
+    return;
+  }
+  runLogLoading.value = true;
+  try {
+    const taskId = selectedTask.value.id || selectedTask.value.task?.id;
+    const res = await request.get(`/training/remote/logs/${taskId}`, {
+      params: {
+        limit: RUN_LOG_FETCH_LIMIT,
+        tail: true,
+      },
+      silent: true,
+    });
+    runLogLines.value = res.lines || [];
+    runLogMeta.value = {
+      ...createEmptyRunLogMeta(),
+      ...res,
+    };
+  } catch (e) {
+    console.error("获取运行日志失败", e);
+  } finally {
+    runLogLoading.value = false;
+  }
+}
+
+function downloadRunLog() {
   if (!selectedTask.value) return;
-  downloadJson(
-    trainingErrorDetail.value || {
-      error: selectedTask.value.error_message || "训练失败",
-    },
-    `training-log-${selectedTask.value.task_uuid || selectedTask.value.id}.json`,
-  );
+  if (!runLogMeta.value.exists) {
+    ElMessage.info("暂无可下载的运行日志");
+    return;
+  }
+  const taskId = selectedTask.value.id || selectedTask.value.task?.id;
+  request
+    .get(`/training/remote/logs/${taskId}/download-url`, {
+      silent: true,
+    })
+    .then((res) => {
+      if (res.download_url) {
+        window.open(res.download_url, "_blank", "noopener");
+      }
+    })
+    .catch((error) => {
+      ElMessage.error(error.response?.data?.detail || "获取运行日志下载地址失败");
+    });
 }
 
 function downloadJson(payload, filename) {
@@ -511,6 +642,10 @@ function downloadJson(payload, filename) {
 
 function canCancelTask(task) {
   return Boolean(task) && shouldPollMonitorTask(task);
+}
+
+function canDeleteTask(task) {
+  return Boolean(task) && !shouldPollMonitorTask(task);
 }
 
 function shouldPollMonitorTask(task) {
@@ -535,6 +670,7 @@ async function fetchTasks() {
 async function selectTask(task) {
   selectedTask.value = task;
   monitorActiveTab.value = "metrics";
+  resetRunLog();
   lastMonitorRefreshAt.value = null;
   await nextTick();
   // 延迟初始化图表，确保 Element Plus 组件完成布局
@@ -567,7 +703,8 @@ function handleChartResize() {
   if (mapChart && !mapChart.isDisposed()) mapChart.resize();
 }
 
-async function refreshMonitor() {
+async function refreshMonitor({ manual = false } = {}) {
+  if (manual && !canManuallyRefreshMonitor.value) return;
   await fetchMetrics({ force: true });
 }
 
@@ -596,21 +733,24 @@ async function fetchMetrics({ force = false } = {}) {
     }
     syncMonitorTab();
     if (metrics.length > 0) updateCharts(metrics);
-    lastMonitorRefreshAt.value = Date.now();
-    refreshClockNow.value = Date.now();
+    await fetchRunLog();
     if (!shouldPollMonitorTask(selectedTask.value)) {
       stopPolling();
     }
   } catch (e) {
     console.error("获取指标失败", e);
+    await fetchRunLog();
   } finally {
+    const refreshedAt = Date.now();
+    lastMonitorRefreshAt.value = refreshedAt;
+    refreshClockNow.value = refreshedAt;
     monitorRefreshing.value = false;
   }
 }
 
 function syncMonitorTab() {
   if (hasTrainingError.value) {
-    monitorActiveTab.value = "error";
+    monitorActiveTab.value = "logs";
   } else if (monitorActiveTab.value === "error") {
     monitorActiveTab.value = "metrics";
   }
@@ -731,12 +871,14 @@ function startPolling() {
   stopPolling();
   if (!shouldPollMonitorTask(selectedTask.value)) return;
   pollTimer = setInterval(() => {
-    if (shouldPollMonitorTask(selectedTask.value)) {
-      fetchMetrics();
-    } else {
+    if (!shouldPollMonitorTask(selectedTask.value)) {
       stopPolling();
+      return;
     }
-  }, MONITOR_POLL_INTERVAL_MS);
+    if (!monitorRefreshing.value && monitorAutoRefreshRemainingMs.value <= 0) {
+      refreshMonitor();
+    }
+  }, MONITOR_POLL_TICK_MS);
 }
 function stopPolling() {
   if (pollTimer) {
@@ -862,11 +1004,13 @@ function formatDate(value) {
   return new Date(value).toLocaleString();
 }
 
-function formatRefreshAge(lastAt, now) {
-  const seconds = Math.max(Math.floor((now - lastAt) / 1000), 0);
+function formatRefreshCountdown(valueMs) {
+  const seconds = Math.max(Math.ceil(valueMs / 1000), 0);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  return `${minutes}分钟`;
+  const remainSeconds = seconds % 60;
+  if (!remainSeconds) return `${minutes}分钟`;
+  return `${minutes}分${String(remainSeconds).padStart(2, "0")}秒`;
 }
 
 async function stopTask(task) {
@@ -885,6 +1029,38 @@ async function stopTask(task) {
     await fetchTasks();
   } catch (e) {
     if (e !== "cancel") ElMessage.error("停止失败");
+  }
+}
+
+async function deleteTask(task) {
+  const taskId = task.id || task.task?.id;
+  try {
+    await ElMessageBox.confirm(
+      `删除训练记录 ${task.task_uuid || taskId} 会同时删除该训练产生的模型、训练产物和运行日志，且不可恢复。确定继续吗？`,
+      "确认删除",
+      {
+        type: "warning",
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+      },
+    );
+    await request.delete(`/training/tasks/${taskId}`, {
+      params: { cascade_models: true },
+    });
+    ElMessage.success("训练记录已删除");
+    if (
+      selectedTask.value &&
+      (selectedTask.value.id || selectedTask.value.task?.id) === taskId
+    ) {
+      selectedTask.value = null;
+      resetRunLog();
+      stopPolling();
+    }
+    await fetchTasks();
+  } catch (e) {
+    if (e !== "cancel") {
+      ElMessage.error(e.response?.data?.detail || "删除训练记录失败");
+    }
   }
 }
 
@@ -1058,32 +1234,58 @@ onBeforeUnmount(() => {
   color: #909399;
   margin-top: 4px;
 }
-.training-error-panel {
+.training-log-panel {
   padding-top: 4px;
 }
-.training-error-toolbar {
+.training-log-toolbar {
   align-items: flex-start;
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 12px;
 }
-.training-error-scrollbar {
+.training-log-meta {
+  color: #606266;
+  font-size: 13px;
+  line-height: 28px;
+}
+.training-log-scrollbar {
   background: #1f2329;
   border: 1px solid #30363d;
   border-radius: 6px;
 }
-.training-error-text {
+.training-log-lines {
   color: #e5e7eb;
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     monospace;
   font-size: 12px;
   line-height: 1.6;
-  margin: 0;
-  padding: 14px;
+  padding: 12px 0;
+}
+.training-log-line {
+  align-items: flex-start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 72px minmax(0, 1fr);
+  min-height: 20px;
+  padding: 0 14px;
+}
+.training-log-line-number {
+  color: #8b949e;
+  text-align: right;
+  user-select: none;
+}
+.training-log-line-content {
+  color: #e5e7eb;
+  min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.training-log-empty {
+  color: #8b949e;
+  font-size: 13px;
+  padding: 18px;
 }
 .task-list-card,
 .monitor-card,
