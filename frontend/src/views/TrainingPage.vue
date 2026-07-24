@@ -18,9 +18,42 @@
           >
         </div>
       </template>
+      <div class="task-filters">
+        <el-input
+          v-model="taskFilters.taskUuid"
+          clearable
+          placeholder="搜索任务 ID"
+        >
+          <template #prefix><el-icon><Search /></el-icon></template>
+        </el-input>
+        <el-select v-model="taskFilters.status" clearable placeholder="状态">
+          <el-option
+            v-for="item in taskStatusOptions"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          />
+        </el-select>
+        <el-select v-model="taskFilters.modelName" clearable placeholder="模型">
+          <el-option
+            v-for="model in taskModelOptions"
+            :key="model"
+            :label="model"
+            :value="model"
+          />
+        </el-select>
+        <el-date-picker
+          v-model="taskFilters.timeRange"
+          type="datetimerange"
+          start-placeholder="起始时间"
+          end-placeholder="结束时间"
+          range-separator="至"
+        />
+        <el-button @click="resetTaskFilters">重置</el-button>
+      </div>
       <el-table
         class="task-table"
-        :data="taskList"
+        :data="paginatedTaskList"
         stripe
         :fit="false"
         v-loading="loadingTasks"
@@ -105,6 +138,40 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="pagination-bar">
+        <el-button
+          :disabled="taskPagination.currentPage <= 1"
+          @click="goTaskPage(1)"
+        >
+          第一页
+        </el-button>
+        <el-button
+          :disabled="taskPagination.currentPage <= 1"
+          @click="goTaskPage(taskPagination.currentPage - 1)"
+        >
+          上一页
+        </el-button>
+        <el-pagination
+          v-model:current-page="taskPagination.currentPage"
+          v-model:page-size="taskPagination.pageSize"
+          background
+          :page-sizes="PAGE_SIZE_OPTIONS"
+          :total="filteredTaskList.length"
+          layout="total, sizes, pager, jumper"
+        />
+        <el-button
+          :disabled="taskPagination.currentPage >= taskTotalPages"
+          @click="goTaskPage(taskPagination.currentPage + 1)"
+        >
+          下一页
+        </el-button>
+        <el-button
+          :disabled="taskPagination.currentPage >= taskTotalPages"
+          @click="goTaskPage(taskTotalPages)"
+        >
+          最后一页
+        </el-button>
+      </div>
     </el-card>
 
     <el-card v-if="selectedTask" class="monitor-card" shadow="never">
@@ -349,7 +416,14 @@
 
 <script setup>
 import request from "@/utils/request";
-import { Delete, Download, Plus, Refresh, Upload } from "@element-plus/icons-vue";
+import {
+  Delete,
+  Download,
+  Plus,
+  Refresh,
+  Search,
+  Upload,
+} from "@element-plus/icons-vue";
 import * as echarts from "echarts";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -360,6 +434,16 @@ const router = useRouter();
 const taskList = ref([]);
 const loadingTasks = ref(false);
 const selectedTask = ref(null);
+const taskFilters = ref({
+  taskUuid: "",
+  status: "",
+  modelName: "",
+  timeRange: [],
+});
+const taskPagination = ref({
+  currentPage: 1,
+  pageSize: 20,
+});
 const monitorRefreshing = ref(false);
 const reportExporting = ref(false);
 const runLogLoading = ref(false);
@@ -380,6 +464,7 @@ const MONITOR_AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 const MONITOR_MANUAL_REFRESH_COOLDOWN_MS = 20 * 1000;
 const MONITOR_POLL_TICK_MS = 1000;
 const RUN_LOG_FETCH_LIMIT = 2000;
+const PAGE_SIZE_OPTIONS = [10, 20, 30, 40, 50];
 const TERMINAL_TRAINING_STATUSES = [
   "completed",
   "succeeded",
@@ -388,6 +473,15 @@ const TERMINAL_TRAINING_STATUSES = [
   "cancelled",
   "stopped",
   "aborted",
+];
+const taskStatusOptions = [
+  { label: "等待中", value: "pending" },
+  { label: "训练中", value: "running" },
+  { label: "已完成", value: "completed" },
+  { label: "失败", value: "failed" },
+  { label: "已取消", value: "cancelled" },
+  { label: "已停止", value: "stopped" },
+  { label: "已中止", value: "aborted" },
 ];
 
 // 数据集管理
@@ -459,6 +553,48 @@ const metricCards = computed(() => {
       value: m.map50_95 != null ? (m.map50_95 * 100).toFixed(1) + "%" : "-",
     },
   ];
+});
+
+const taskModelOptions = computed(() => {
+  const models = new Set();
+  taskList.value.forEach((task) => {
+    if (task.model_name) models.add(task.model_name);
+  });
+  return Array.from(models).sort((a, b) => a.localeCompare(b));
+});
+
+const filteredTaskList = computed(() => {
+  const taskUuid = taskFilters.value.taskUuid.trim().toLowerCase();
+  const status = taskFilters.value.status;
+  const modelName = taskFilters.value.modelName;
+  const [startTime, endTime] = taskFilters.value.timeRange || [];
+  const startMs = startTime ? new Date(startTime).getTime() : null;
+  const endMs = endTime ? new Date(endTime).getTime() : null;
+  return taskList.value.filter((task) => {
+    if (taskUuid) {
+      const value = String(task.task_uuid || task.id || "").toLowerCase();
+      if (!value.includes(taskUuid)) return false;
+    }
+    if (status && !taskStatusMatches(task.status, status)) return false;
+    if (modelName && task.model_name !== modelName) return false;
+    if (startMs || endMs) {
+      const createdMs = new Date(task.created_at || "").getTime();
+      if (!Number.isFinite(createdMs)) return false;
+      if (startMs && createdMs < startMs) return false;
+      if (endMs && createdMs > endMs) return false;
+    }
+    return true;
+  });
+});
+
+const taskTotalPages = computed(() =>
+  Math.max(1, Math.ceil(filteredTaskList.value.length / taskPagination.value.pageSize)),
+);
+
+const paginatedTaskList = computed(() => {
+  const start =
+    (taskPagination.value.currentPage - 1) * taskPagination.value.pageSize;
+  return filteredTaskList.value.slice(start, start + taskPagination.value.pageSize);
 });
 
 const monitorRefreshLabel = computed(() => {
@@ -557,6 +693,33 @@ function statusText(s) {
     aborted: "已中止",
   };
   return m[s] || s;
+}
+
+function taskStatusMatches(actualStatus, filterStatus) {
+  const actual = String(actualStatus || "").toLowerCase();
+  if (filterStatus === "completed") {
+    return ["completed", "succeeded", "finished"].includes(actual);
+  }
+  if (filterStatus === "cancelled") {
+    return ["cancelled", "canceled"].includes(actual);
+  }
+  return actual === filterStatus;
+}
+
+function resetTaskFilters() {
+  taskFilters.value = {
+    taskUuid: "",
+    status: "",
+    modelName: "",
+    timeRange: [],
+  };
+}
+
+function goTaskPage(page) {
+  taskPagination.value.currentPage = Math.min(
+    Math.max(Number(page) || 1, 1),
+    taskTotalPages.value,
+  );
 }
 
 function parseErrorDetail(value) {
@@ -1186,6 +1349,29 @@ watch(
   },
 );
 
+watch(
+  () => [
+    taskFilters.value.taskUuid,
+    taskFilters.value.status,
+    taskFilters.value.modelName,
+    taskFilters.value.timeRange?.[0],
+    taskFilters.value.timeRange?.[1],
+    taskPagination.value.pageSize,
+  ],
+  () => {
+    taskPagination.value.currentPage = 1;
+  },
+);
+
+watch(
+  () => filteredTaskList.value.length,
+  () => {
+    if (taskPagination.value.currentPage > taskTotalPages.value) {
+      taskPagination.value.currentPage = taskTotalPages.value;
+    }
+  },
+);
+
 onBeforeUnmount(() => {
   stopPolling();
   if (refreshClockTimer) {
@@ -1237,6 +1423,15 @@ onBeforeUnmount(() => {
   gap: 10px;
   grid-template-columns: minmax(0, 1fr) auto;
   width: 100%;
+}
+.task-filters {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns:
+    minmax(150px, 1.1fr) minmax(120px, 0.8fr) minmax(120px, 0.8fr)
+    minmax(300px, 1.6fr) auto;
+  margin-bottom: 14px;
 }
 .metric-cards {
   margin-bottom: 8px;
@@ -1330,6 +1525,14 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   word-break: normal;
 }
+.pagination-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
 .monitor-action-button.el-button.is-text,
 .monitor-action-button.el-button.is-text:not(.is-disabled):hover,
 .monitor-action-button.el-button.is-text:not(.is-disabled):focus,
@@ -1342,5 +1545,20 @@ onBeforeUnmount(() => {
   border-color: transparent;
   box-shadow: none;
   color: var(--el-color-primary);
+}
+
+@media (max-width: 1100px) {
+  .task-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .task-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pagination-bar {
+    justify-content: flex-start;
+  }
 }
 </style>

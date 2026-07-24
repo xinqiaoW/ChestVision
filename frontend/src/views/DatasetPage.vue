@@ -36,7 +36,7 @@
       </template>
 
       <el-table
-        :data="filteredDatasets"
+        :data="paginatedDatasets"
         stripe
         v-loading="loading"
         empty-text="暂无数据集"
@@ -84,6 +84,40 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="pagination-bar">
+        <el-button
+          :disabled="datasetPagination.currentPage <= 1"
+          @click="goDatasetPage(1)"
+        >
+          第一页
+        </el-button>
+        <el-button
+          :disabled="datasetPagination.currentPage <= 1"
+          @click="goDatasetPage(datasetPagination.currentPage - 1)"
+        >
+          上一页
+        </el-button>
+        <el-pagination
+          v-model:current-page="datasetPagination.currentPage"
+          v-model:page-size="datasetPagination.pageSize"
+          background
+          :page-sizes="PAGE_SIZE_OPTIONS"
+          :total="filteredDatasets.length"
+          layout="total, sizes, pager, jumper"
+        />
+        <el-button
+          :disabled="datasetPagination.currentPage >= datasetTotalPages"
+          @click="goDatasetPage(datasetPagination.currentPage + 1)"
+        >
+          下一页
+        </el-button>
+        <el-button
+          :disabled="datasetPagination.currentPage >= datasetTotalPages"
+          @click="goDatasetPage(datasetTotalPages)"
+        >
+          最后一页
+        </el-button>
+      </div>
     </el-card>
 
     <el-dialog
@@ -217,6 +251,10 @@ const route = useRoute();
 const datasetList = ref([]);
 const keyword = ref("");
 const loading = ref(false);
+const datasetPagination = ref({
+  currentPage: 1,
+  pageSize: 20,
+});
 const showUploadDialog = ref(false);
 const uploading = ref(false);
 const cancelingUpload = ref(false);
@@ -229,12 +267,29 @@ const fileList = ref([]);
 const uploadProgress = ref(createUploadProgress());
 let uploadController = null;
 let unsubscribeUploadController = null;
+const PAGE_SIZE_OPTIONS = [10, 20, 30, 40, 50];
 
 const filteredDatasets = computed(() => {
   const text = keyword.value.trim().toLowerCase();
   if (!text) return datasetList.value;
   return datasetList.value.filter((item) =>
     item.name.toLowerCase().includes(text),
+  );
+});
+
+const datasetTotalPages = computed(() =>
+  Math.max(
+    1,
+    Math.ceil(filteredDatasets.value.length / datasetPagination.value.pageSize),
+  ),
+);
+
+const paginatedDatasets = computed(() => {
+  const start =
+    (datasetPagination.value.currentPage - 1) * datasetPagination.value.pageSize;
+  return filteredDatasets.value.slice(
+    start,
+    start + datasetPagination.value.pageSize,
   );
 });
 
@@ -440,6 +495,13 @@ async function confirmDelete(row) {
   }
 }
 
+function goDatasetPage(page) {
+  datasetPagination.value.currentPage = Math.min(
+    Math.max(Number(page) || 1, 1),
+    datasetTotalPages.value,
+  );
+}
+
 function createUploadProgress(visible = false) {
   const totalBytes = selectedFile.value?.size || 0;
   const totalParts = totalBytes
@@ -522,6 +584,22 @@ watch(
   () => openUploadDialogFromQuery(),
 );
 
+watch(
+  () => [keyword.value, datasetPagination.value.pageSize],
+  () => {
+    datasetPagination.value.currentPage = 1;
+  },
+);
+
+watch(
+  () => filteredDatasets.value.length,
+  () => {
+    if (datasetPagination.value.currentPage > datasetTotalPages.value) {
+      datasetPagination.value.currentPage = datasetTotalPages.value;
+    }
+  },
+);
+
 onMounted(() => {
   fetchDatasets();
   openUploadDialogFromQuery();
@@ -573,6 +651,15 @@ onMounted(() => {
 
 .search-input {
   width: 260px;
+}
+
+.pagination-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
 }
 
 .dataset-name-cell {
@@ -684,5 +771,8 @@ onMounted(() => {
     flex-direction: column;
   }
 
+  .pagination-bar {
+    justify-content: flex-start;
+  }
 }
 </style>

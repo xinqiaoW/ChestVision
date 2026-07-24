@@ -69,12 +69,6 @@
       </div>
     </el-card>
 
-    <div class="upload-band">
-      <el-button type="primary" @click="openUploadDialog">
-        <el-icon><Upload /></el-icon>上传模型
-      </el-button>
-    </div>
-
     <el-card class="models-card" shadow="never">
       <template #header>
         <div class="card-header">
@@ -128,7 +122,7 @@
       </div>
 
       <el-table
-        :data="modelList"
+        :data="paginatedModelList"
         stripe
         v-loading="loadingModels"
         empty-text="暂无模型"
@@ -183,6 +177,40 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="pagination-bar">
+        <el-button
+          :disabled="modelPagination.currentPage <= 1"
+          @click="goModelPage(1)"
+        >
+          第一页
+        </el-button>
+        <el-button
+          :disabled="modelPagination.currentPage <= 1"
+          @click="goModelPage(modelPagination.currentPage - 1)"
+        >
+          上一页
+        </el-button>
+        <el-pagination
+          v-model:current-page="modelPagination.currentPage"
+          v-model:page-size="modelPagination.pageSize"
+          background
+          :page-sizes="PAGE_SIZE_OPTIONS"
+          :total="modelList.length"
+          layout="total, sizes, pager, jumper"
+        />
+        <el-button
+          :disabled="modelPagination.currentPage >= modelTotalPages"
+          @click="goModelPage(modelPagination.currentPage + 1)"
+        >
+          下一页
+        </el-button>
+        <el-button
+          :disabled="modelPagination.currentPage >= modelTotalPages"
+          @click="goModelPage(modelTotalPages)"
+        >
+          最后一页
+        </el-button>
+      </div>
     </el-card>
 
     <el-dialog
@@ -399,7 +427,7 @@ import {
   VideoPlay,
 } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 const router = useRouter();
@@ -408,6 +436,10 @@ const loadingDefault = ref(false);
 const loadingModels = ref(false);
 const defaultInfo = ref(null);
 const modelList = ref([]);
+const modelPagination = ref({
+  currentPage: 1,
+  pageSize: 20,
+});
 const filters = ref({
   modelName: "",
   version: "",
@@ -430,6 +462,7 @@ let unsubscribeUploadController = null;
 const showConfigDialog = ref(false);
 const configModel = ref(null);
 const settingDefaultId = ref(null);
+const PAGE_SIZE_OPTIONS = [10, 20, 30, 40, 50];
 
 const defaultModel = computed(() => defaultInfo.value?.model || null);
 const defaultScene = computed(() => defaultInfo.value?.scene || null);
@@ -440,6 +473,16 @@ const uploadedCount = computed(
 const trainedCount = computed(
   () => modelList.value.filter((item) => item.source_type === "trained").length,
 );
+
+const modelTotalPages = computed(() =>
+  Math.max(1, Math.ceil(modelList.value.length / modelPagination.value.pageSize)),
+);
+
+const paginatedModelList = computed(() => {
+  const start =
+    (modelPagination.value.currentPage - 1) * modelPagination.value.pageSize;
+  return modelList.value.slice(start, start + modelPagination.value.pageSize);
+});
 
 const sceneOptions = computed(() => {
   const map = new Map();
@@ -535,6 +578,7 @@ async function fetchModels() {
       source_type: filters.value.sourceType || "all",
     });
     modelList.value = res.items || res.models || [];
+    modelPagination.value.currentPage = 1;
   } catch (error) {
     console.error("获取模型列表失败", error);
   } finally {
@@ -745,6 +789,13 @@ async function confirmDelete(row) {
   }
 }
 
+function goModelPage(page) {
+  modelPagination.value.currentPage = Math.min(
+    Math.max(Number(page) || 1, 1),
+    modelTotalPages.value,
+  );
+}
+
 async function downloadWeight(row) {
   try {
     const res = await getModelDownloadUrl(row.id);
@@ -855,6 +906,22 @@ function formatDate(value) {
   return new Date(value).toLocaleString();
 }
 
+watch(
+  () => modelPagination.value.pageSize,
+  () => {
+    modelPagination.value.currentPage = 1;
+  },
+);
+
+watch(
+  () => modelList.value.length,
+  () => {
+    if (modelPagination.value.currentPage > modelTotalPages.value) {
+      modelPagination.value.currentPage = modelTotalPages.value;
+    }
+  },
+);
+
 onMounted(refreshAll);
 </script>
 
@@ -954,16 +1021,6 @@ onMounted(refreshAll);
   min-width: 0;
 }
 
-.upload-band {
-  align-items: center;
-  border-bottom: 1px solid #ebeef5;
-  border-top: 1px solid #ebeef5;
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 20px;
-  padding: 14px 0;
-}
-
 .filters {
   display: grid;
   gap: 10px;
@@ -971,6 +1028,15 @@ onMounted(refreshAll);
     minmax(150px, 1.2fr) minmax(120px, 1fr) minmax(140px, 1fr)
     minmax(130px, 1fr) minmax(120px, 1fr) auto auto;
   margin-bottom: 14px;
+}
+
+.pagination-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
 }
 
 .selected-upload-file {
@@ -1077,6 +1143,10 @@ onMounted(refreshAll);
   .default-model-grid,
   .filters {
     grid-template-columns: 1fr;
+  }
+
+  .pagination-bar {
+    justify-content: flex-start;
   }
 }
 </style>
