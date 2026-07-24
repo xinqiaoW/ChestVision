@@ -22,12 +22,28 @@
         class="task-table"
         :data="taskList"
         stripe
+        :fit="false"
         v-loading="loadingTasks"
       >
-        <el-table-column prop="task_uuid" label="任务 ID" width="100" />
-        <el-table-column prop="model_name" label="模型" width="110" />
-        <el-table-column prop="device" label="设备" width="80" />
-        <el-table-column label="进度" width="180">
+        <el-table-column
+          prop="task_uuid"
+          label="任务 ID"
+          width="130"
+          show-overflow-tooltip
+        />
+        <el-table-column
+          prop="model_name"
+          label="模型"
+          width="120"
+          show-overflow-tooltip
+        />
+        <el-table-column
+          prop="device"
+          label="设备"
+          width="120"
+          show-overflow-tooltip
+        />
+        <el-table-column label="进度" width="190">
           <template #default="{ row }">
             <el-progress
               :percentage="row.progress"
@@ -54,7 +70,12 @@
             }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" width="170" />
+        <el-table-column
+          prop="created_at"
+          label="创建时间"
+          width="190"
+          show-overflow-tooltip
+        />
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button
@@ -1302,6 +1323,12 @@ onBeforeUnmount(() => {
 }
 .task-table {
   width: 100%;
+}
+.task-table :deep(.el-table__cell .cell) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
 }
 .monitor-action-button.el-button.is-text,
 .monitor-action-button.el-button.is-text:not(.is-disabled):hover,
